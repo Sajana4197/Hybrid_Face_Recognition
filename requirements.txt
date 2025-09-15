@@ -1,0 +1,9 @@
+numpy
+pillow
+opencv-python
+torch
+torchvision
+facenet-pytorch
+joblib
+tqdm
+scikit-learn == 1.7.1
