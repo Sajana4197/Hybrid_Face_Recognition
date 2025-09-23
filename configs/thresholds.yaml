@@ -1,0 +1,4 @@
+neuralhash:
+  T_NH_reject: 20
+hdic:
+  T_HDC_accept: 2500

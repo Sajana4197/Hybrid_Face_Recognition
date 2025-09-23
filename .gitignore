@@ -1,17 +1,58 @@
-# ---- Python ----
+# ----------------
+# Python
+# ----------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pkl
 *.pdb
 *.egg-info/
-*.egg
-*.manifest
-*.spec
+*.log
 
+# ----------------
 # Virtual environments
-.venv/
+# ----------------
 venv/
+.env/
+.venv/
 
-# Dataset
+# ----------------
+# IDE / Editor
+# ----------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ----------------
+# Machine Learning / Checkpoints
+# ----------------
+*.h5
+*.hdf5
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# ----------------
+# Data / Outputs
+# ----------------
+db/
 dataset/
+outputs/
+results/
+logs/
+
+# ----------------
+# Jupyter
+# ----------------
+.ipynb_checkpoints/
+*.ipynb
+
+# ----------------
+# OS
+# ----------------
+Thumbs.db
+desktop.ini

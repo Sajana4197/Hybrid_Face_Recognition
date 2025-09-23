@@ -1,0 +1,9 @@
+mode: cascade
+shortlist_k: 5
+preprocess:
+  align: true
+  output_size: [112, 112]
+  normalize: true
+hdic:
+  clusters_k: 3
+  stochastic_flip_p: 0.02
