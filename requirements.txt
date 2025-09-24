@@ -1,9 +1,22 @@
+# Core scientific stack
 numpy
-pillow
-opencv-python
+scikit-learn
+scipy
+
+# Deep learning (for NeuralHash + HDIC)
 torch
 torchvision
-facenet-pytorch
-joblib
+tensorflow
+facenet-pytorch      # ArcFace / InceptionResnetV1 + MTCNN
+keras-facenet        # FaceNet embeddings (HDIC pipeline)
+
+# Image processing
+opencv-python
+Pillow
+
+# Utilities
 tqdm
-scikit-learn == 1.7.1
+pyyaml
+
+# Optional but useful
+matplotlib           # debugging / visualization

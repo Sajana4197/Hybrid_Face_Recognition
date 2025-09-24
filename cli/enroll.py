@@ -70,7 +70,7 @@ def main():
 
     print(f"Enrolling NeuralHash ({len(nh_hashes)} samples)...")
     pbar_nh = tqdm(total=1, desc="NeuralHash enroll")
-    nh_enroll(args.id, args.name, nh_hashes, images[:len(nh_hashes)])
+    nh_enroll(args.id, args.name, nh_hashes)
     pbar_nh.update(1)
     pbar_nh.close()
     print("NeuralHash enrollment finished")
