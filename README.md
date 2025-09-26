@@ -38,14 +38,38 @@ pip install -r requirements.txt
 
 ## 📝 Usage
 
+### 1. Enroll
+
 To enroll a new person, run
 
 ```bash
 python -m cli.enroll --id n000002 --name "John Doe" --images "dataset/n000002"
 ```
 
-and for a comparison, run
+To enroll all persons at once from `dataset/enroll/`:
+
+```bash
+python -m cli.bulk_enroll --root dataset/enroll --clusters 3
+```
+
+### 2. Comparison
+
+For the comparison, run
 
 ```bash
 python -m cli.match --image dataset/probe/unknown1.jpg --K 5
+```
+
+### 3. Evaluate system
+
+Closed-set:
+
+```bash
+python -m cli.evaluate_ident --test_root dataset/test --K 5 --Tnh 20,25,30 --Thdic 2000:4000:200
+```
+
+Open-set:
+
+```bash
+python -m cli.evaluate_ident --test_root dataset/test --unknown_root dataset/test_unknown --K 5 --Tnh 20,25,30 --Thdic 2000:4000:200
 ```
