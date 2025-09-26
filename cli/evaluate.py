@@ -52,7 +52,7 @@ def compute_metrics(results):
     return {"TP": TP, "FP": FP, "TN": TN, "FN": FN,
             "TAR": tar, "FAR": far, "FRR": frr, "Accuracy": acc}
 
-def sweep_thresholds(pairs, nh_db, hdic_db, Tnh=30, K=5, th_start=3000, th_end=6000, th_step=250):
+def sweep_thresholds(pairs, nh_db, hdic_db, Tnh=30, K=5, th_start=1000, th_end=4000, th_step=500):
     thresholds, fars, frrs, accs = [], [], [], []
     for Thdic in range(th_start, th_end + 1, th_step):
         results = []

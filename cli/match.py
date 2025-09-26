@@ -10,8 +10,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, help="Path to probe image")
     parser.add_argument("--K", type=int, default=5, help="NeuralHash shortlist size")
-    parser.add_argument("--Tnh", type=int, default=30, help="NeuralHash reject threshold")
-    parser.add_argument("--Thdic", type=int, default=5000, help="HDIC reject threshold")
+    parser.add_argument("--Tnh", type=int, default=25, help="NeuralHash reject threshold")
+    parser.add_argument("--Thdic", type=int, default=3000, help="HDIC reject threshold")
     args = parser.parse_args()
 
     # Step 1: Preprocess
