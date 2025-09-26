@@ -42,9 +42,6 @@ hypervectors/
 *.npz
 *.json
 
-# Databases
-db/*.jsonl
-!db/.gitkeep
 
 
 
