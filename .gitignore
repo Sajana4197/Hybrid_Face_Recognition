@@ -41,7 +41,7 @@ embeddings/
 hypervectors/
 *.npy
 *.npz
-*.json
+
 
 
 
