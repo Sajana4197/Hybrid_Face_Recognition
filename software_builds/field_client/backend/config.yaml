@@ -1,0 +1,7 @@
+Tnh: 25
+Thdic: 3100
+w_nh: 0.4
+w_hdic: 0.6
+T_final: 0.75
+port: 5001
+log_path: logs/matches.jsonl

@@ -21,3 +21,7 @@ pyyaml
 
 # Optional but useful
 matplotlib           # debugging / visualization
+
+fastapi 
+uvicorn 
+python-multipart
