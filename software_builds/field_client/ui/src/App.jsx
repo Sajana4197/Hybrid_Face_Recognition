@@ -162,21 +162,20 @@ export default function App() {
 
           {/* Frame Summary */}
           {resultData && (
-            <div className="mt-3 text-sm text-slate-300">
-              {resultData.frames && (
-                <p>
-                  Processed <b>{resultData.frames}</b> frames — method:{" "}
-                  <b>{resultData.method}</b>
-                </p>
-              )}
-              {resultData.best_score && (
-                <p>
-                  Best Score:{" "}
-                  <b className="text-emerald-400">
-                    {resultData.best_score.toFixed(3)}
-                  </b>
-                </p>
-              )}
+            <div className="mt-2 text-sm text-slate-300">
+              <p>
+                Matched frames: <b>{resultData.match_frames}</b> /{" "}
+                {resultData.frames} →{" "}
+                <b
+                  className={
+                    resultData.decision === "MATCH"
+                      ? "text-emerald-400"
+                      : "text-rose-400"
+                  }
+                >
+                  {resultData.decision}
+                </b>
+              </p>
             </div>
           )}
 

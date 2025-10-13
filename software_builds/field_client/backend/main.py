@@ -101,6 +101,7 @@ async def match_multi(files: List[UploadFile] = File(...)):
     frame_results = []  # to store results for all frames
     best_result = None
     best_score = -1
+    match_count = 0
 
     for i, uf in enumerate(files):
         try:
@@ -130,6 +131,9 @@ async def match_multi(files: List[UploadFile] = File(...)):
             pid = result.get("person_id", None)
             decision = result.get("decision", "UNKNOWN")
 
+            if decision == "MATCH":
+                match_count += 1
+
             frame_info = {
                 "index": i + 1,
                 "filename": uf.filename,
@@ -154,14 +158,21 @@ async def match_multi(files: List[UploadFile] = File(...)):
     if not frame_results:
         return {"decision": "NO_FACE", "frames": 0}
 
-    # --- Final combined report ---
+    # ---- Majority voting rule ----
+    total = len(frame_results)
+    match_ratio = match_count / total
+    majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
+
+    # ---- Build final result ----
     final_result = {
-        "method": "best-of-N",
-        "frames": len(frame_results),
+        "method": "majority-of-N",
+        "frames": total,
+        "match_frames": match_count,
+        "match_ratio": round(match_ratio, 2),
+        "decision": majority_decision,
         "best_score": round(best_score, 3),
-        "best_decision": best_result.get("decision") if best_result else "UNKNOWN",
         "best_person_id": best_result.get("person_id") if best_result else None,
-        "frame_details": frame_results,  # full list of all frames
+        "frame_details": frame_results,
     }
 
     # Add log entry for traceability
