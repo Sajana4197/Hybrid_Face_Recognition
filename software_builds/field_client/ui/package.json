@@ -3,7 +3,7 @@
   "name": "hybrid-field-client",
   "version": "0.1.0",
   "private": true,
-  "main": "electron/main.js",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "concurrently \"npm:serve-react\" \"npm:serve-electron\"",
     "serve-react": "vite",

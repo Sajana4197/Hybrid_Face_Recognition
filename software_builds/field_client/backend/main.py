@@ -1,24 +1,19 @@
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
-import sys, json, yaml, uvicorn, cv2, numpy as np
+import json, yaml, uvicorn, cv2, numpy as np
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List
 
+# ---- Internal project imports ----
 from fusion.parallel_service import match_frame
-
-# ----- Project wiring -----
-REPO_ROOT = Path(__file__).resolve().parents[3]  # .../<repo-root>/
-sys.path.append(str(REPO_ROOT))
-
-# Import YOUR real modules (used in the CLI parallel system)
-from preprocess.align import load_and_align                 # use the same aligner your CLI uses
-from neuralhash.adapter import compute_hash_bits       # returns 96-bit vector of 0/1
-from hdic.encode_hv import encode_embedding_to_hv                    # returns 10k-D float32 hypervector
-# If you have helper fusion code, keep using it; here we compute Sfinal inline.
-
+from preprocess.align import load_and_align
+from neuralhash.adapter import compute_hash_bits
+from hdic.feature_extractor import generate_embedding2
+from hdic.encode_hv import encode_embedding_to_hv
 from software_builds.field_client.backend.loader import load_watchlists
 from software_builds.field_client.backend.matcher import score_person_distances, fuse_parallel
 
@@ -27,9 +22,12 @@ app = FastAPI(title="Hybrid Field Client (Parallel NH+HDIC)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
+# ----- Config loading -----
 CFG_PATH = Path(__file__).parent / "config.yaml"
 CONFIG = yaml.safe_load(CFG_PATH.read_text())
 Tnh     = float(CONFIG.get("Tnh", 30))
@@ -41,13 +39,21 @@ PORT    = int(CONFIG.get("port", 5001))
 LOGPATH = Path(__file__).parent / (CONFIG.get("log_path", "logs/matches.jsonl"))
 LOGPATH.parent.mkdir(parents=True, exist_ok=True)
 
-# Load merged watchlist (requires both JSONL files under repo/db/)
+# Load merged watchlist (NH + HDIC)
+REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONS = load_watchlists(REPO_ROOT)
 
+# ---------- Utility ----------
+def log_match(entry: dict):
+    with LOGPATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+# ---------- Health ----------
 @app.get("/health")
 def health():
     return {"status": "ok", "watchlist_size": len(PERSONS)}
 
+# ---------- Config endpoints ----------
 @app.get("/config")
 def get_config():
     return {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic, "T_final": T_final}
@@ -61,33 +67,12 @@ def update_config(payload: dict):
             if k in ("w_nh","w_hdic") and not (0.0 <= val <= 1.0):
                 continue
             locals()[k] = val
-    # persist
-    cfg = {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic, "T_final": T_final, "port": PORT, "log_path": str(LOGPATH.relative_to(Path(__file__).parent))}
+    cfg = {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
+           "T_final": T_final, "port": PORT, "log_path": str(LOGPATH.relative_to(Path(__file__).parent))}
     CFG_PATH.write_text(yaml.safe_dump(cfg))
     return {"ok": True, "config": cfg}
 
-def detect_and_align(frame_bgr: np.ndarray) -> np.ndarray | None:
-    """
-    Use your real aligner. If your aligner requires RGB or a specific API, adapt here.
-    """
-    try:
-        # load_and_align should return a cropped/aligned face image (np.ndarray, BGR or RGB as your encoders expect)
-        face = load_and_align(frame_bgr)
-        return face
-    except Exception:
-        # Fallback: Haar cascade (only for emergency)
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-        faces = cascade.detectMultiScale(gray, 1.3, 5)
-        if len(faces) == 0:
-            return None
-        x,y,w,h = faces[0]
-        return frame_bgr[y:y+h, x:x+w]
-
-def log_match(entry: dict):
-    with LOGPATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
+# ---------- Single-frame match ----------
 @app.post("/match")
 async def match(file: UploadFile = File(...)):
     img = np.frombuffer(await file.read(), dtype=np.uint8)
@@ -101,7 +86,93 @@ async def match(file: UploadFile = File(...)):
         w_nh=w_nh, w_hdic=w_hdic,
         fused_th=T_final
     )
+    result["frames"] = 1
+    log_match(result)
     return result
 
+# ---------- Multi-frame match (stable memory version) ----------
+@app.post("/match_multi")
+async def match_multi(files: List[UploadFile] = File(...)):
+    """
+    Capture & match using multiple frames (e.g., 5 webcam images).
+    Each frame is matched independently; all details returned.
+    The best-scoring frame is selected as the final result.
+    """
+    frame_results = []  # to store results for all frames
+    best_result = None
+    best_score = -1
+
+    for i, uf in enumerate(files):
+        try:
+            # --- Decode directly from memory ---
+            img_bytes = await uf.read()
+            img_array = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+            if frame is None:
+                print(f"[WARN] Could not decode frame {uf.filename}")
+                continue
+
+            # --- Run your normal match pipeline for each frame ---
+            result = match_frame(
+                frame_bgr=frame,
+                Tnh=Tnh,
+                Thdic=Thdic,
+                w_nh=w_nh,
+                w_hdic=w_hdic,
+                fused_th=T_final,
+            )
+
+            # Extract Sfinal (fused score)
+            Sfinal = result.get("scores", {}).get("Sfinal", 0)
+            d_nh = result.get("scores", {}).get("d_nh", None)
+            d_hdic = result.get("scores", {}).get("d_hdic", None)
+            pid = result.get("person_id", None)
+            decision = result.get("decision", "UNKNOWN")
+
+            frame_info = {
+                "index": i + 1,
+                "filename": uf.filename,
+                "decision": decision,
+                "Sfinal": round(float(Sfinal), 3) if Sfinal is not None else None,
+                "d_nh": d_nh,
+                "d_hdic": d_hdic,
+                "person_id": pid,
+            }
+            frame_results.append(frame_info)
+
+            # Track best frame by score
+            if Sfinal is not None and Sfinal > best_score:
+                best_score = Sfinal
+                best_result = result
+
+            print(f"[INFO] Frame {i+1}: Sfinal={Sfinal:.3f}, Decision={decision}")
+
+        except Exception as e:
+            print(f"[WARN] Failed to process frame {i+1}: {e}")
+
+    if not frame_results:
+        return {"decision": "NO_FACE", "frames": 0}
+
+    # --- Final combined report ---
+    final_result = {
+        "method": "best-of-N",
+        "frames": len(frame_results),
+        "best_score": round(best_score, 3),
+        "best_decision": best_result.get("decision") if best_result else "UNKNOWN",
+        "best_person_id": best_result.get("person_id") if best_result else None,
+        "frame_details": frame_results,  # full list of all frames
+    }
+
+    # Add log entry for traceability
+    log_match(final_result)
+    return final_result
+
+# ---------- Entry ----------
 if __name__ == "__main__":
-    uvicorn.run("software_builds.field_client.backend.main:app", host="127.0.0.1", port=PORT, reload=True)
+    uvicorn.run(
+        "software_builds.field_client.backend.main:app",
+        host="127.0.0.1",
+        port=PORT,
+        reload=True,
+    )

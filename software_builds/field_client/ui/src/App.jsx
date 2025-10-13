@@ -7,10 +7,11 @@ export default function App() {
   const videoRef = useRef(null);
   const [decision, setDecision] = useState("");
   const [personId, setPersonId] = useState("");
-  const [scores, setScores] = useState(null);
+  const [resultData, setResultData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState("unknown");
 
+  // --- Initialize camera ---
   useEffect(() => {
     (async () => {
       try {
@@ -24,8 +25,8 @@ export default function App() {
     })();
   }, []);
 
+  // --- Backend health check ---
   useEffect(() => {
-    // ping backend health once
     (async () => {
       try {
         const r = await fetch(`${API_BASE}/health`);
@@ -36,41 +37,50 @@ export default function App() {
     })();
   }, []);
 
+  // --- Capture and match multiple frames ---
   async function captureAndMatch() {
     if (busy) return;
     setBusy(true);
+    setDecision("Capturing...");
+    setResultData(null);
+
+    const video = videoRef.current;
+    const frames = [];
     try {
-      const canvas = document.createElement("canvas");
-      const video = videoRef.current;
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise((resolve) =>
-        canvas.toBlob(resolve, "image/jpeg", 0.9)
-      );
+      for (let i = 0; i < 5; i++) {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", 0.9)
+        );
+        frames.push(blob);
+        await new Promise((r) => setTimeout(r, 200)); // 0.2s gap
+      }
 
       const form = new FormData();
-      form.append("file", blob, "frame.jpg");
+      frames.forEach((b, idx) => form.append("files", b, `frame${idx}.jpg`));
 
-      const res = await axios.post(`${API_BASE}/match`, form, {
+      const res = await axios.post(`${API_BASE}/match_multi`, form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const data = res.data || {};
-      setDecision(data.decision || "ERROR");
-      setPersonId(data.person_id || "");
-      setScores(data.scores || {});
+      const data = res.data;
+      setResultData(data);
+      setDecision(data.best_decision || data.decision || "UNKNOWN");
+      setPersonId(data.best_person_id || "");
     } catch (e) {
       console.error(e);
       setDecision("ERROR");
-      setPersonId("");
-      setScores({});
+      setResultData(null);
     } finally {
       setBusy(false);
     }
   }
 
+  // --- UI Styling ---
   const bannerClasses = {
     MATCH: "bg-green-600",
     NO_MATCH: "bg-red-600",
@@ -83,8 +93,8 @@ export default function App() {
     decision === ""
       ? "Ready"
       : decision === "MATCH"
-      ? `✅ MATCH: ${personId} — Sfinal = ${
-          scores?.Sfinal !== undefined ? scores.Sfinal.toFixed(3) : "N/A"
+      ? `✅ MATCH: ${personId} — Best Sfinal = ${
+          resultData?.best_score ? resultData.best_score.toFixed(3) : "N/A"
         }`
       : decision === "NO_MATCH"
       ? "❌ NO MATCH FOUND"
@@ -119,7 +129,6 @@ export default function App() {
 
         {/* Card */}
         <div className="bg-slate-800/70 rounded-2xl shadow-xl ring-1 ring-slate-700 p-5">
-          {/* Video */}
           <video
             ref={videoRef}
             autoPlay
@@ -127,7 +136,7 @@ export default function App() {
             className="w-full rounded-lg border border-slate-700 shadow-md"
           />
 
-          {/* Controls */}
+          {/* Button */}
           <div className="flex justify-center mt-5">
             <button
               onClick={captureAndMatch}
@@ -138,7 +147,7 @@ export default function App() {
                   : "bg-blue-600 hover:bg-blue-700"
               }`}
             >
-              {busy ? "Processing…" : "Capture & Match"}
+              {busy ? "Processing…" : "Capture & Match (5 Frames)"}
             </button>
           </div>
 
@@ -151,33 +160,76 @@ export default function App() {
             {decisionText}
           </div>
 
-          {/* Scores */}
-          {scores && Object.keys(scores).length > 0 && (
-            <div className="mt-4 text-sm bg-slate-900/60 rounded-lg p-4 border border-slate-700">
-              <p className="font-semibold mb-2 text-slate-200">Score Details</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
-                <div>
-                  <b>d_NH</b>: {scores?.d_nh ?? "N/A"}
-                </div>
-                <div>
-                  <b>d_HDiC</b>: {scores?.d_hdic ?? "N/A"}
-                </div>
-                <div>
-                  <b>Snh</b>:{" "}
-                  {scores?.Snh !== undefined ? scores.Snh.toFixed(3) : "N/A"}
-                </div>
-                <div>
-                  <b>Shdic_norm</b>:{" "}
-                  {scores?.Shdic_norm !== undefined
-                    ? scores.Shdic_norm.toFixed(3)
-                    : "N/A"}
-                </div>
-                <div className="sm:col-span-2">
-                  <b>Sfinal</b>:{" "}
-                  {scores?.Sfinal !== undefined
-                    ? scores.Sfinal.toFixed(3)
-                    : "N/A"}
-                </div>
+          {/* Frame Summary */}
+          {resultData && (
+            <div className="mt-3 text-sm text-slate-300">
+              {resultData.frames && (
+                <p>
+                  Processed <b>{resultData.frames}</b> frames — method:{" "}
+                  <b>{resultData.method}</b>
+                </p>
+              )}
+              {resultData.best_score && (
+                <p>
+                  Best Score:{" "}
+                  <b className="text-emerald-400">
+                    {resultData.best_score.toFixed(3)}
+                  </b>
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Frame-by-frame Details */}
+          {resultData?.frame_details?.length > 0 && (
+            <div className="mt-5 bg-slate-900/60 rounded-lg p-4 border border-slate-700">
+              <p className="font-semibold mb-2 text-slate-200">
+                Frame-by-frame Results:
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse border border-slate-700">
+                  <thead>
+                    <tr className="bg-slate-700 text-slate-100">
+                      <th className="p-2 border border-slate-600">Frame</th>
+                      <th className="p-2 border border-slate-600">Decision</th>
+                      <th className="p-2 border border-slate-600">Sfinal</th>
+                      <th className="p-2 border border-slate-600">d_NH</th>
+                      <th className="p-2 border border-slate-600">d_HDiC</th>
+                      <th className="p-2 border border-slate-600">Person ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resultData.frame_details.map((f, i) => (
+                      <tr
+                        key={i}
+                        className={`${
+                          f.decision === "MATCH"
+                            ? "bg-emerald-800/30"
+                            : "bg-slate-800"
+                        }`}
+                      >
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.index}
+                        </td>
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.decision}
+                        </td>
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.Sfinal}
+                        </td>
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.d_nh}
+                        </td>
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.d_hdic}
+                        </td>
+                        <td className="p-2 border border-slate-700 text-center">
+                          {f.person_id || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
