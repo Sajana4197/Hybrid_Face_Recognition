@@ -71,22 +71,6 @@ def list_persons():
         for pid, info in sorted(index.items())
     ])
 
-@router.get("/view/{person_id}")
-def view_person(person_id: str):
-    ensure_files()
-    nh = load_jsonl(NH_FILE)
-    hd = load_jsonl(HDIC_FILE)
-    nhr = find_person(nh, person_id)
-    hdr = find_person(hd, person_id)
-    if not nhr and not hdr:
-        raise HTTPException(status_code=404, detail="Person not found")
-    return dict(
-        person_id=person_id,
-        name=(nhr or hdr).get("name",""),
-        nh_hash_count=len(nhr.get("hashes", [])) if nhr else 0,
-        hdic_proto_keys=list(hdr.get("prototypes", {}).keys()) if hdr else [],
-    )
-
 @router.post("/enroll")
 async def enroll_person(
     person_id: str = Form(...),
