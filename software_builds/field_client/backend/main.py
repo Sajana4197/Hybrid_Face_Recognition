@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
 # ---- Internal project imports ----
 from fusion.parallel_service import match_frame
@@ -95,26 +96,18 @@ async def match(file: UploadFile = File(...)):
 async def match_multi(files: List[UploadFile] = File(...)):
     """
     Capture & match using multiple frames (e.g., 5 webcam images).
-    Each frame is matched independently; all details returned.
-    The best-scoring frame is selected as the final result.
+    Each frame is matched independently; final decision = majority rule (>=3 MATCH).
     """
-    frame_results = []  # to store results for all frames
-    best_result = None
-    best_score = -1
-    match_count = 0
+    frames_data = [(i, await uf.read(), uf.filename) for i, uf in enumerate(files)]
 
-    for i, uf in enumerate(files):
+    def process_single(idx, img_bytes, filename):
         try:
-            # --- Decode directly from memory ---
-            img_bytes = await uf.read()
             img_array = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
             if frame is None:
-                print(f"[WARN] Could not decode frame {uf.filename}")
-                continue
+                print(f"[WARN] Could not decode frame {filename}")
+                return None
 
-            # --- Run your normal match pipeline for each frame ---
             result = match_frame(
                 frame_bgr=frame,
                 Tnh=Tnh,
@@ -124,58 +117,58 @@ async def match_multi(files: List[UploadFile] = File(...)):
                 fused_th=T_final,
             )
 
-            # Extract Sfinal (fused score)
             Sfinal = result.get("scores", {}).get("Sfinal", 0)
             d_nh = result.get("scores", {}).get("d_nh", None)
             d_hdic = result.get("scores", {}).get("d_hdic", None)
-            pid = result.get("person_id", None)
             decision = result.get("decision", "UNKNOWN")
+            pid = result.get("person_id", None)
 
-            if decision == "MATCH":
-                match_count += 1
+            print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={Sfinal:.3f}")
 
-            frame_info = {
-                "index": i + 1,
-                "filename": uf.filename,
+            return {
+                "index": idx + 1,
+                "filename": filename,
                 "decision": decision,
                 "Sfinal": round(float(Sfinal), 3) if Sfinal is not None else None,
                 "d_nh": d_nh,
                 "d_hdic": d_hdic,
                 "person_id": pid,
             }
-            frame_results.append(frame_info)
-
-            # Track best frame by score
-            if Sfinal is not None and Sfinal > best_score:
-                best_score = Sfinal
-                best_result = result
-
-            print(f"[INFO] Frame {i+1}: Sfinal={Sfinal:.3f}, Decision={decision}")
-
         except Exception as e:
-            print(f"[WARN] Failed to process frame {i+1}: {e}")
+            print(f"[WARN] Failed to process frame {idx+1}: {e}")
+            return None
 
-    if not frame_results:
+    # Run all frames in parallel
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        results = list(filter(None, ex.map(lambda args: process_single(*args), frames_data)))
+
+    # ---- Handle no valid results ----
+    if not results:
+        print("[WARN] No valid frame results found — returning NO_FACE")
         return {"decision": "NO_FACE", "frames": 0}
 
-    # ---- Majority voting rule ----
-    total = len(frame_results)
-    match_ratio = match_count / total
+    # ---- Majority-based rule ----
+    total = len(results)
+    match_count = sum(1 for r in results if r["decision"] == "MATCH")
     majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
 
-    # ---- Build final result ----
+    # ---- Best frame (highest Sfinal) ----
+    best_frame = max(results, key=lambda x: x.get("Sfinal", 0))
+    best_score = best_frame.get("Sfinal", 0)
+    best_pid = best_frame.get("person_id", None)
+
+    # ---- Final combined result ----
     final_result = {
         "method": "majority-of-N",
         "frames": total,
         "match_frames": match_count,
-        "match_ratio": round(match_ratio, 2),
+        "match_ratio": round(match_count / total, 2),
         "decision": majority_decision,
         "best_score": round(best_score, 3),
-        "best_person_id": best_result.get("person_id") if best_result else None,
-        "frame_details": frame_results,
+        "best_person_id": best_pid,
+        "frame_details": results,
     }
 
-    # Add log entry for traceability
     log_match(final_result)
     return final_result
 
