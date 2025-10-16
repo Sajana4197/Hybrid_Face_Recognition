@@ -7,6 +7,7 @@
     "preview": "vite preview --port 5174"
   },
   "dependencies": {
+    "lucide-react": "^0.545.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

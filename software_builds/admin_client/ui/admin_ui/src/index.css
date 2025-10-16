@@ -5,3 +5,16 @@
 body {
   @apply bg-slate-900 text-slate-100;
 }
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.6);
+  }
+}
+.animate-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
