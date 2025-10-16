@@ -41,6 +41,7 @@ embeddings/
 hypervectors/
 *.npy
 *.npz
+security/mini_db/
 
 
 
