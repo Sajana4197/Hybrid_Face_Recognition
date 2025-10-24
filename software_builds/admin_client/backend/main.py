@@ -1,5 +1,7 @@
 # software_builds/admin_client/backend/main.py
 import sys, os
+
+from fastapi.staticfiles import StaticFiles
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
 from fastapi import FastAPI
@@ -22,3 +24,6 @@ def health():
     return {"status": "ok"}
 
 app.include_router(admin_router, prefix="")
+
+# after creating app = FastAPI(...)
+app.mount("/received_alerts", StaticFiles(directory="received_alerts"), name="received_alerts")

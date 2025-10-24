@@ -5,3 +5,4 @@ w_hdic: 0.6
 T_final: 0.75
 port: 5001
 log_path: logs/matches.jsonl
+admin_api: "http://127.0.0.1:5002"

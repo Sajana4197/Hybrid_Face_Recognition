@@ -1,10 +1,10 @@
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
+import requests 
 import json, yaml, uvicorn, cv2, numpy as np
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +17,9 @@ from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from software_builds.field_client.backend.loader import load_watchlists
 from software_builds.field_client.backend.matcher import score_person_distances, fuse_parallel
+
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
 
 # ----- FastAPI app -----
 app = FastAPI(title="Hybrid Field Client (Parallel NH+HDIC)")
@@ -40,6 +43,9 @@ PORT    = int(CONFIG.get("port", 5001))
 LOGPATH = Path(__file__).parent / (CONFIG.get("log_path", "logs/matches.jsonl"))
 LOGPATH.parent.mkdir(parents=True, exist_ok=True)
 
+# ✅ NEW: Load Admin API address from config.yaml
+ADMIN_API = CONFIG.get("admin_api", "http://127.0.0.1:5002")
+
 # Load merged watchlist (NH + HDIC)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONS = load_watchlists(REPO_ROOT)
@@ -49,6 +55,30 @@ def log_match(entry: dict):
     with LOGPATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+def send_manual_alert(person_id: str, similarity: float, frame_bgr: np.ndarray, timestamp=None):
+    """
+    Encode the chosen frame as JPEG and POST it to the Admin server.
+    """
+    try:
+        ok, buf = cv2.imencode(".jpg", frame_bgr)
+        if not ok:
+            print("[WARN] Could not encode frame to JPG for alert")
+            return
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        files = {"file": ("capture.jpg", buf.tobytes(), "image/jpeg")}
+        data = {
+            "person_id": person_id,
+            "similarity": float(similarity),
+            "timestamp": timestamp
+        }
+        url = f"{ADMIN_API}/manual_check/receive"
+        requests.post(url, data=data, files=files, timeout=5, proxies={"http": None, "https": None})
+        print("[INFO] Sent manual verification alert to admin")
+    except Exception as e:
+        print("[WARN] Failed to send manual verification alert:", e)
+
+
 # ---------- Health ----------
 @app.get("/health")
 def health():
@@ -57,19 +87,30 @@ def health():
 # ---------- Config endpoints ----------
 @app.get("/config")
 def get_config():
-    return {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic, "T_final": T_final}
+    return {
+        "Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh,
+        "w_hdic": w_hdic, "T_final": T_final,
+        "admin_api": ADMIN_API
+    }
 
 @app.post("/config")
 def update_config(payload: dict):
-    global Tnh, Thdic, w_nh, w_hdic, T_final
-    for k in ["Tnh","Thdic","w_nh","w_hdic","T_final"]:
+    global Tnh, Thdic, w_nh, w_hdic, T_final, ADMIN_API
+    for k in ["Tnh","Thdic","w_nh","w_hdic","T_final","admin_api"]:
         if k in payload:
-            val = float(payload[k])
-            if k in ("w_nh","w_hdic") and not (0.0 <= val <= 1.0):
+            val = payload[k]
+            if k in ("w_nh","w_hdic") and not (0.0 <= float(val) <= 1.0):
                 continue
-            locals()[k] = val
-    cfg = {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
-           "T_final": T_final, "port": PORT, "log_path": str(LOGPATH.relative_to(Path(__file__).parent))}
+            if k == "admin_api":
+                ADMIN_API = str(val)
+            else:
+                locals()[k] = float(val)
+    cfg = {
+        "Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
+        "T_final": T_final, "port": PORT,
+        "log_path": str(LOGPATH.relative_to(Path(__file__).parent)),
+        "admin_api": ADMIN_API
+    }
     CFG_PATH.write_text(yaml.safe_dump(cfg))
     return {"ok": True, "config": cfg}
 
@@ -89,15 +130,18 @@ async def match(file: UploadFile = File(...)):
     )
     result["frames"] = 1
     log_match(result)
+
+    # Send to admin on MATCH
+    if result.get("decision") == "MATCH":
+        pid = result.get("person_id") or "unknown"
+        sfinal = (result.get("scores") or {}).get("Sfinal", 0.0)
+        send_manual_alert(pid, sfinal, frame)
+
     return result
 
-# ---------- Multi-frame match (stable memory version) ----------
+# ---------- Multi-frame match ----------
 @app.post("/match_multi")
 async def match_multi(files: List[UploadFile] = File(...)):
-    """
-    Capture & match using multiple frames (e.g., 5 webcam images).
-    Each frame is matched independently; final decision = majority rule (>=3 MATCH).
-    """
     frames_data = [(i, await uf.read(), uf.filename) for i, uf in enumerate(files)]
 
     def process_single(idx, img_bytes, filename):
@@ -107,29 +151,23 @@ async def match_multi(files: List[UploadFile] = File(...)):
             if frame is None:
                 print(f"[WARN] Could not decode frame {filename}")
                 return None
-
             result = match_frame(
                 frame_bgr=frame,
-                Tnh=Tnh,
-                Thdic=Thdic,
-                w_nh=w_nh,
-                w_hdic=w_hdic,
+                Tnh=Tnh, Thdic=Thdic,
+                w_nh=w_nh, w_hdic=w_hdic,
                 fused_th=T_final,
             )
-
             Sfinal = result.get("scores", {}).get("Sfinal", 0)
             d_nh = result.get("scores", {}).get("d_nh", None)
             d_hdic = result.get("scores", {}).get("d_hdic", None)
             decision = result.get("decision", "UNKNOWN")
             pid = result.get("person_id", None)
-
             print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={Sfinal:.3f}")
-
             return {
                 "index": idx + 1,
                 "filename": filename,
                 "decision": decision,
-                "Sfinal": round(float(Sfinal), 3) if Sfinal is not None else None,
+                "Sfinal": float(Sfinal) if Sfinal is not None else None,
                 "d_nh": d_nh,
                 "d_hdic": d_hdic,
                 "person_id": pid,
@@ -138,26 +176,21 @@ async def match_multi(files: List[UploadFile] = File(...)):
             print(f"[WARN] Failed to process frame {idx+1}: {e}")
             return None
 
-    # Run all frames in parallel
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = list(filter(None, ex.map(lambda args: process_single(*args), frames_data)))
 
-    # ---- Handle no valid results ----
     if not results:
-        print("[WARN] No valid frame results found — returning NO_FACE")
         return {"decision": "NO_FACE", "frames": 0}
 
-    # ---- Majority-based rule ----
     total = len(results)
     match_count = sum(1 for r in results if r["decision"] == "MATCH")
     majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
-
-    # ---- Best frame (highest Sfinal) ----
-    best_frame = max(results, key=lambda x: x.get("Sfinal", 0))
-    best_score = best_frame.get("Sfinal", 0)
+    best_frame = max(results, key=lambda x: x.get("Sfinal", 0) or 0.0)
+    best_score = best_frame.get("Sfinal", 0.0)
     best_pid = best_frame.get("person_id", None)
+    best_idx = best_frame["index"] - 1
 
-    # ---- Final combined result ----
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     final_result = {
         "method": "majority-of-N",
         "frames": total,
@@ -167,10 +200,41 @@ async def match_multi(files: List[UploadFile] = File(...)):
         "best_score": round(best_score, 3),
         "best_person_id": best_pid,
         "frame_details": results,
+        "timestamp": timestamp
     }
 
     log_match(final_result)
+
+    if majority_decision == "MATCH" and best_pid:
+        try:
+            _, best_bytes, _ = frames_data[best_idx]
+            best_arr = np.frombuffer(best_bytes, np.uint8)
+            best_bgr = cv2.imdecode(best_arr, cv2.IMREAD_COLOR)
+            if best_bgr is not None:
+                send_manual_alert(best_pid, best_score, best_bgr, timestamp)
+            else:
+                print("[WARN] Could not decode best frame for alert")
+        except Exception as e:
+            print("[WARN] Failed to prepare best frame for alert:", e)
+
     return final_result
+
+
+# ✅ NEW: Admin feedback check endpoint
+@app.get("/check_status")
+def check_admin_status(person_id: str, timestamp: str):
+    try:
+        r = requests.get(
+            f"{ADMIN_API}/manual_check/status",
+            params={"person_id": person_id, "timestamp": timestamp},
+            timeout=5,
+            proxies={"http": None, "https": None}
+        )
+        return r.json()
+    except Exception as e:
+        print("[WARN] Failed to query admin for status:", e)
+        return {"status": "unknown", "error": str(e)}
+
 
 # ---------- Entry ----------
 if __name__ == "__main__":

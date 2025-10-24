@@ -25,25 +25,37 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState("unknown");
 
-  // NEW STATE: Manages the glow color ('none', 'red', or 'green')
   const [glowColor, setGlowColor] = useState("none");
-  const glowTimerRef = useRef(null); // Ref to hold the timer ID
+  const glowTimerRef = useRef(null);
+
+  const [adminStatus, setAdminStatus] = useState(null);
+  const pollRef = useRef(null);
 
   // Initialize camera
   useEffect(() => {
-    (async () => {
+    async function initCamera() {
       try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter((d) => d.kind === "videoinput");
+        if (videoDevices.length === 0)
+          throw new Error("No camera devices found");
+
+        const preferredDevice =
+          videoDevices.find((d) => d.label.toLowerCase().includes("usb")) ||
+          videoDevices[0];
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+          video: { deviceId: preferredDevice.deviceId },
         });
         if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch (e) {
-        console.error("Camera error:", e);
+      } catch (err) {
+        console.error("Camera initialization failed:", err);
+        alert("Could not access camera: " + err.message);
       }
-    })();
+    }
+    initCamera();
   }, []);
 
-  // Backend health check
+  // Health check
   useEffect(() => {
     const checkHealth = async () => {
       try {
@@ -58,53 +70,65 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // MODIFIED: Logic to handle both red and green glows
+  // Glow control
   useEffect(() => {
-    // Clear any existing timer when a new decision is made
-    if (glowTimerRef.current) {
-      clearTimeout(glowTimerRef.current);
-    }
+    if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
 
     if (decision === "MATCH") {
       setGlowColor("red");
-      new Audio("/match-sound.wav")
-        .play()
-        .catch((e) => console.error("Error playing sound:", e));
+      new Audio("/match-sound.wav").play().catch(() => {});
     } else if (decision === "NO_MATCH") {
       setGlowColor("green");
-      new Audio("/no-match-sound.mp3")
-        .play()
-        .catch((e) => console.error("Error playing sound:", e));
+      new Audio("/no-match-sound.mp3").play().catch(() => {});
+    } else if (decision === "ADMIN_CONFIRMED") {
+      setGlowColor("green");
+      new Audio("/approved.mp3").play().catch(() => {});
+    } else if (decision === "ADMIN_REJECTED") {
+      setGlowColor("red");
+      new Audio("/rejected.mp3").play().catch(() => {});
     } else {
-      setGlowColor("none"); // No glow for other states
-      return; // Exit early if no glow is needed
+      setGlowColor("none");
+      return;
     }
 
-    // Set a 5-second timer to turn off the glow
-    glowTimerRef.current = setTimeout(() => {
-      setGlowColor("none");
-    }, 5000);
+    glowTimerRef.current = setTimeout(() => setGlowColor("none"), 5000);
+    return () => clearTimeout(glowTimerRef.current);
+  }, [decision]);
 
-    // Cleanup function to clear the timer if the component unmounts
-    return () => {
-      if (glowTimerRef.current) {
-        clearTimeout(glowTimerRef.current);
+  // Poll Admin decision
+  async function pollAdminDecision(pid, ts) {
+    if (!pid || !ts) return;
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/check_status?person_id=${pid}&timestamp=${ts}`
+        );
+        const data = await res.json();
+        if (data.status === "confirmed") {
+          clearInterval(pollRef.current);
+          setAdminStatus("confirmed");
+          setDecision("ADMIN_CONFIRMED");
+        } else if (data.status === "rejected") {
+          clearInterval(pollRef.current);
+          setAdminStatus("rejected");
+          setDecision("ADMIN_REJECTED");
+        }
+      } catch (e) {
+        console.warn("Polling error:", e);
       }
-    };
-  }, [decision, resultData]);
+    }, 5000);
+  }
 
   async function captureAndMatch() {
     if (busy) return;
-
-    // MODIFICATION: Stop any active glow when a new scan starts
     setGlowColor("none");
-    if (glowTimerRef.current) {
-      clearTimeout(glowTimerRef.current);
-    }
+    if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
 
     setBusy(true);
     setDecision("Capturing...");
     setResultData(null);
+    setAdminStatus(null);
 
     const video = videoRef.current;
     const frames = [];
@@ -132,6 +156,11 @@ export default function App() {
       setResultData(data);
       setDecision(data.best_decision || data.decision || "UNKNOWN");
       setPersonId(data.best_person_id || "");
+
+      // Start polling for admin confirmation if match
+      if (data.decision === "MATCH" && data.best_person_id && data.timestamp) {
+        pollAdminDecision(data.best_person_id, data.timestamp);
+      }
     } catch (e) {
       console.error(e);
       setDecision("ERROR");
@@ -141,7 +170,6 @@ export default function App() {
     }
   }
 
-  // Map state to CSS classes for clean rendering
   const glowClasses = {
     red: "animate-red-glow",
     green: "animate-green-glow",
@@ -160,21 +188,18 @@ export default function App() {
           <HealthStatus health={health} />
         </header>
 
-        {/* MODIFICATION: Dynamically apply glow class based on state */}
         <main
           className={clsx(
             "flex-1 bg-gray-800/50 rounded-2xl shadow-2xl ring-1 ring-white/10 backdrop-blur-sm p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 overflow-hidden",
-            glowClasses[glowColor] // This applies 'animate-red-glow' or 'animate-green-glow'
+            glowClasses[glowColor]
           )}
         >
           <div className="flex flex-col items-center justify-center gap-3">
-            {/* Outer container for the animated gradient border */}
             <div
               className="relative w-auto max-h-[480px] aspect-[4/5] rounded-xl p-[4px] overflow-hidden shadow-lg 
                bg-gradient-to-r from-cyan-400 via-blue-700 to-red-600 
                bg-300% animate-gradient-move"
             >
-              {/* Inner container that provides the dark background */}
               <div className="w-full h-full bg-gray-900 rounded-[10px] overflow-hidden">
                 <video
                   ref={videoRef}
@@ -188,6 +213,7 @@ export default function App() {
               Live camera feed — ensure face is centered
             </p>
           </div>
+
           <div className="flex flex-col items-center gap-4">
             <button
               onClick={captureAndMatch}
@@ -205,13 +231,12 @@ export default function App() {
             </button>
 
             <AnimatePresence mode="wait">
-              <AnimatePresence mode="wait">
-                <DecisionDisplay
-                  key={resultData ? resultData.best_person_id : decision}
-                  decision={decision}
-                  glow={glowColor} // <-- ADD THIS PROP
-                />
-              </AnimatePresence>
+              <DecisionDisplay
+                key={resultData ? resultData.best_person_id : decision}
+                decision={decision}
+                glow={glowColor}
+                adminStatus={adminStatus}
+              />
             </AnimatePresence>
 
             <AnimatePresence>
@@ -238,7 +263,7 @@ export default function App() {
   );
 }
 
-// --- Sub-components (No changes below this line) ---
+// --- Sub-components (unchanged, except new admin statuses added) ---
 
 const HealthStatus = ({ health }) => {
   const isOk = health === "ok";
@@ -248,7 +273,6 @@ const HealthStatus = ({ health }) => {
         "flex items-center gap-2 text-sm px-3 py-1.5 rounded-full font-medium",
         isOk ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"
       )}
-      title="Backend health"
     >
       {isOk ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
       {isOk ? "Backend Connected" : "Backend Down"}
@@ -256,32 +280,37 @@ const HealthStatus = ({ health }) => {
   );
 };
 
-const DecisionDisplay = ({ decision, glow }) => {
-  // <-- 1. Add 'glow' here
+const DecisionDisplay = ({ decision, glow, adminStatus }) => {
   const config = {
     MATCH: {
       icon: <CheckCircle2 size={28} />,
-      style:
-        "bg-red-500/20 border-red-500/50 text-red-200 items items-center justify-center",
+      style: "bg-red-500/20 border-red-500/50 text-red-200",
       title: "MATCH FOUND",
     },
     NO_MATCH: {
       icon: <XCircle size={28} />,
-      style:
-        "bg-green-500/20 border-green-500/50 text-green-200 items-center justify-center",
+      style: "bg-green-500/20 border-green-500/50 text-green-200",
       title: "NO MATCH FOUND",
     },
     NO_FACE: {
       icon: <AlertTriangle size={28} />,
-      style:
-        "bg-yellow-500/20 border-yellow-500/50 text-yellow-200 items-center justify-center",
+      style: "bg-yellow-500/20 border-yellow-500/50 text-yellow-200",
       title: "No Face Detected",
     },
     ERROR: {
       icon: <XCircle size={28} />,
-      style:
-        "bg-gray-500/20 border-gray-500/50 text-gray-200 items-center justify-center",
+      style: "bg-gray-500/20 border-gray-500/50 text-gray-200",
       title: "Processing Error",
+    },
+    ADMIN_CONFIRMED: {
+      icon: <CheckCircle2 size={28} />,
+      style: "bg-green-500/30 border-green-500/50 text-green-200",
+      title: "ADMIN CONFIRMED MATCH",
+    },
+    ADMIN_REJECTED: {
+      icon: <XCircle size={28} />,
+      style: "bg-red-500/30 border-red-500/50 text-red-200",
+      title: "ADMIN REJECTED MATCH",
     },
     "Capturing...": {
       icon: <Loader size={28} className="animate-spin" />,
@@ -295,13 +324,8 @@ const DecisionDisplay = ({ decision, glow }) => {
       text: "Click 'Capture & Match' to begin.",
     },
   };
-
   const current = config[decision] || config.default;
-
-  const glowClasses = {
-    red: "animate-red-glow",
-    green: "animate-green-glow",
-  };
+  const glowClasses = { red: "animate-red-glow", green: "animate-green-glow" };
 
   return (
     <motion.div
@@ -309,16 +333,27 @@ const DecisionDisplay = ({ decision, glow }) => {
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.9 }}
       transition={{ duration: 0.3 }}
-      // 2. Modify clsx to add the glow class from the prop
       className={clsx(
         "w-full max-w-sm flex items-center gap-4 p-4 rounded-lg border",
         current.style,
-        glowClasses[glow] // <-- ADD THIS LINE
+        glowClasses[glow]
       )}
     >
       <div className="flex-shrink-0">{current.icon}</div>
       <div>
         <h3 className="font-bold text-lg leading-tight">{current.title}</h3>
+        {adminStatus && (
+          <p className="text-sm opacity-80 mt-1">
+            Admin status:{" "}
+            <b
+              className={
+                adminStatus === "confirmed" ? "text-green-300" : "text-red-300"
+              }
+            >
+              {adminStatus}
+            </b>
+          </p>
+        )}
         {current.text && <p className="text-sm opacity-80">{current.text}</p>}
       </div>
     </motion.div>

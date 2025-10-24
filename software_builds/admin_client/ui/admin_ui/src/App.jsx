@@ -498,20 +498,117 @@ function WatchlistView() {
 }
 
 function ManualCheckView() {
+  const API = import.meta.env.VITE_ADMIN_API || "http://127.0.0.1:5002";
+  const [alerts, setAlerts] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+
+  async function loadAlerts() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/manual_check/list`);
+      const d = await r.json();
+      setAlerts(d.alerts || []);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function decide(a, decision) {
+    const form = new FormData();
+    form.append("person_id", a.person_id);
+    form.append("timestamp", a.timestamp);
+    form.append("decision", decision);
+    await fetch(`${API}/manual_check/decision`, { method: "POST", body: form });
+    loadAlerts();
+  }
+
+  React.useEffect(() => {
+    loadAlerts();
+  }, []);
+
   return (
-    <Card title="Manual Check">
-      <p className="text-slate-400 text-sm mb-4">
-        Upload a single image to verify it against the watchlist. The system
-        will return the closest match if one is found above the configured
-        thresholds.
-      </p>
-      <FileInput accept="image/*" />
-      <div className="mt-4">
-        <Button variant="primary">Check Image</Button>
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xl font-semibold">Manual Verification</h2>
+        <button
+          onClick={loadAlerts}
+          className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600"
+        >
+          Reload
+        </button>
       </div>
-    </Card>
+
+      {loading && <p className="text-sm text-slate-400">Loading…</p>}
+
+      {alerts.length === 0 ? (
+        <p className="text-slate-400 text-sm">No alerts.</p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {alerts.map((a, i) => (
+            <div
+              key={i}
+              className="bg-slate-800 p-4 rounded-lg border border-slate-700"
+            >
+              <img
+                src={`${API}${a.file_path}`}
+                alt="capture"
+                className="w-full h-48 object-cover rounded mb-3 border border-slate-600"
+              />
+              <div className="text-sm mb-3">
+                <div>
+                  <b>Person ID:</b> {a.person_id}
+                </div>
+                <div>
+                  <b>Similarity:</b>{" "}
+                  {a.similarity?.toFixed?.(3) ?? a.similarity}
+                </div>
+                <div>
+                  <b>Time:</b> {a.timestamp}
+                </div>
+                <div>
+                  <b>Status:</b>{" "}
+                  <span
+                    className={
+                      a.status === "pending"
+                        ? "text-amber-300"
+                        : a.status === "confirmed"
+                        ? "text-emerald-300"
+                        : "text-rose-300"
+                    }
+                  >
+                    {a.status}
+                  </span>
+                </div>
+              </div>
+
+              {a.status === "pending" ? (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => decide(a, "confirm")}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 px-3 py-1 rounded text-sm"
+                  >
+                    Confirm ✅
+                  </button>
+                  <button
+                    onClick={() => decide(a, "reject")}
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded text-sm"
+                  >
+                    Reject ❌
+                  </button>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400">
+                  <b>Decided:</b> {a.decision_time || "-"}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
+
 function ConfigView() {
   const [cfg, setCfg] = useState({});
   const [msg, setMsg] = useState({ text: "", type: "info" });

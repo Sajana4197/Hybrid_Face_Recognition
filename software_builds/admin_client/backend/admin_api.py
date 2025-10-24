@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import List
 from fastapi import APIRouter, UploadFile, Form, File, HTTPException
 from tempfile import NamedTemporaryFile
+from fastapi.staticfiles import StaticFiles
+from datetime import datetime
 import numpy as np
 
 # ---- Import your real modules (unchanged) ----
@@ -11,6 +13,14 @@ from neuralhash.adapter import compute_hash_bits
 from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from hdic.cluster_enroll import build_cluster_prototypes
+
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
+
+ALERTS_FILE = Path("alerts.jsonl")
+ALERT_IMG_DIR = Path("received_alerts")
+ALERT_IMG_DIR.mkdir(exist_ok=True)
+
 
 router = APIRouter()
 
@@ -50,6 +60,19 @@ def find_person(rows: list[dict], pid: str):
         if r.get("person_id") == pid:
             return r
     return None
+
+def load_jsonl(path: Path):
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+def save_jsonl(path: Path, rows: list[dict]):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, path)
 
 @router.get("/list")
 def list_persons():
@@ -178,3 +201,70 @@ def update_config(cfg: dict):
     with open(CFG_FILE, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     return dict(status="updated", config=cfg)
+
+
+@router.post("/manual_check/receive")
+async def receive_manual_check(
+    person_id: str = Form(...),
+    similarity: float = Form(...),
+    file: UploadFile = File(...),
+):
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    img_path = ALERT_IMG_DIR / f"{person_id}_{ts}.jpg"
+    with img_path.open("wb") as f:
+        f.write(await file.read())
+
+    alert = {
+        "person_id": person_id,
+        "similarity": float(similarity),
+        "timestamp": ts,
+        "file_path": f"/received_alerts/{img_path.name}",
+        "status": "pending"
+    }
+    alerts = load_jsonl(ALERTS_FILE)
+    alerts.append(alert)
+    save_jsonl(ALERTS_FILE, alerts)
+    return {"status": "received", "alert": alert}
+
+@router.get("/manual_check/list")
+def list_alerts():
+    return {"alerts": load_jsonl(ALERTS_FILE)}
+
+@router.post("/manual_check/decision")
+def update_decision(
+    person_id: str = Form(...),
+    timestamp: str = Form(...),
+    decision: str = Form(...),  # "confirm" or "reject"
+):
+    decision = decision.lower().strip()
+    if decision not in ("confirm", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be confirm|reject")
+
+    alerts = load_jsonl(ALERTS_FILE)
+    found = False
+    for a in alerts:
+        if a["person_id"] == person_id and a["timestamp"] == timestamp:
+            a["status"] = "confirmed" if decision == "confirm" else "rejected"
+            a["decision_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    save_jsonl(ALERTS_FILE, alerts)
+    return {"status": "updated"}
+
+@router.get("/manual_check/status")
+def get_status(person_id: str, timestamp: str):
+    """
+    Field client polls this endpoint to know if admin has reviewed the alert.
+    """
+    alerts = load_jsonl(ALERTS_FILE)
+    for a in alerts:
+        if a["person_id"] == person_id and a["timestamp"] == timestamp:
+            return {
+                "status": a.get("status", "pending"),
+                "decision_time": a.get("decision_time", None)
+            }
+    return {"status": "unknown"}
+
