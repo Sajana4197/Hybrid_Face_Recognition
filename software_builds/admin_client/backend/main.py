@@ -26,4 +26,4 @@ def health():
 app.include_router(admin_router, prefix="")
 
 # after creating app = FastAPI(...)
-app.mount("/received_alerts", StaticFiles(directory="received_alerts"), name="received_alerts")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

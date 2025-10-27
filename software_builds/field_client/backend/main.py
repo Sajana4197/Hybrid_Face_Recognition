@@ -8,6 +8,9 @@ from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
+from fastapi.staticfiles import StaticFiles
+from io import BytesIO
+from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
 
 # ---- Internal project imports ----
 from fusion.parallel_service import match_frame
@@ -17,6 +20,7 @@ from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from software_builds.field_client.backend.loader import load_watchlists
 from software_builds.field_client.backend.matcher import score_person_distances, fuse_parallel
+from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"] = "127.0.0.1,localhost"
@@ -30,6 +34,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+app.include_router(ver_router)
 
 # ----- Config loading -----
 CFG_PATH = Path(__file__).parent / "config.yaml"
@@ -55,26 +61,21 @@ def log_match(entry: dict):
     with LOGPATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-def send_manual_alert(person_id: str, similarity: float, frame_bgr: np.ndarray, timestamp=None):
+def send_manual_alert(person_id: str, score: float, image_bytes: bytes, timestamp: str):
     """
-    Encode the chosen frame as JPEG and POST it to the Admin server.
+    Send captured best-match frame to Admin for manual verification.
+    Includes person ID, score, and timestamp.
     """
     try:
-        ok, buf = cv2.imencode(".jpg", frame_bgr)
-        if not ok:
-            print("[WARN] Could not encode frame to JPG for alert")
-            return
-        if timestamp is None:
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        files = {"file": ("capture.jpg", buf.tobytes(), "image/jpeg")}
-        data = {
-            "person_id": person_id,
-            "similarity": float(similarity),
-            "timestamp": timestamp
-        }
-        url = f"{ADMIN_API}/manual_check/receive"
-        requests.post(url, data=data, files=files, timeout=5, proxies={"http": None, "https": None})
-        print("[INFO] Sent manual verification alert to admin")
+        files = {"file": ("match.jpg", BytesIO(image_bytes), "image/jpeg")}
+        data = {"person_id": person_id, "score": score, "timestamp": timestamp}
+        r = requests.post(
+            f"{ADMIN_API}/manual_check/receive",
+            files=files,
+            data=data,
+            timeout=8,
+        )
+        print(f"[INFO] Sent manual verification alert: {r.status_code}")
     except Exception as e:
         print("[WARN] Failed to send manual verification alert:", e)
 
@@ -151,18 +152,22 @@ async def match_multi(files: List[UploadFile] = File(...)):
             if frame is None:
                 print(f"[WARN] Could not decode frame {filename}")
                 return None
+
             result = match_frame(
                 frame_bgr=frame,
                 Tnh=Tnh, Thdic=Thdic,
                 w_nh=w_nh, w_hdic=w_hdic,
                 fused_th=T_final,
             )
+
             Sfinal = result.get("scores", {}).get("Sfinal", 0)
             d_nh = result.get("scores", {}).get("d_nh", None)
             d_hdic = result.get("scores", {}).get("d_hdic", None)
             decision = result.get("decision", "UNKNOWN")
             pid = result.get("person_id", None)
+
             print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={Sfinal:.3f}")
+
             return {
                 "index": idx + 1,
                 "filename": filename,
@@ -172,10 +177,12 @@ async def match_multi(files: List[UploadFile] = File(...)):
                 "d_hdic": d_hdic,
                 "person_id": pid,
             }
+
         except Exception as e:
             print(f"[WARN] Failed to process frame {idx+1}: {e}")
             return None
 
+    # Run all frames in parallel
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = list(filter(None, ex.map(lambda args: process_single(*args), frames_data)))
 
@@ -185,12 +192,14 @@ async def match_multi(files: List[UploadFile] = File(...)):
     total = len(results)
     match_count = sum(1 for r in results if r["decision"] == "MATCH")
     majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
+
     best_frame = max(results, key=lambda x: x.get("Sfinal", 0) or 0.0)
     best_score = best_frame.get("Sfinal", 0.0)
     best_pid = best_frame.get("person_id", None)
     best_idx = best_frame["index"] - 1
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
     final_result = {
         "method": "majority-of-N",
         "frames": total,
@@ -200,24 +209,29 @@ async def match_multi(files: List[UploadFile] = File(...)):
         "best_score": round(best_score, 3),
         "best_person_id": best_pid,
         "frame_details": results,
-        "timestamp": timestamp
+        "timestamp": timestamp,
     }
 
     log_match(final_result)
 
+    # ---- Handle a MATCH (send to Admin + store locally) ----
     if majority_decision == "MATCH" and best_pid:
         try:
             _, best_bytes, _ = frames_data[best_idx]
-            best_arr = np.frombuffer(best_bytes, np.uint8)
-            best_bgr = cv2.imdecode(best_arr, cv2.IMREAD_COLOR)
-            if best_bgr is not None:
-                send_manual_alert(best_pid, best_score, best_bgr, timestamp)
-            else:
-                print("[WARN] Could not decode best frame for alert")
+            enqueue_case(best_pid, best_score, best_bytes)  # Store locally
+
+            # Send to Admin for manual confirmation
+            send_manual_alert(
+                person_id=best_pid,
+                score=best_score,
+                image_bytes=best_bytes,
+                timestamp=timestamp,
+            )
         except Exception as e:
-            print("[WARN] Failed to prepare best frame for alert:", e)
+            print("[WARN] Failed to prepare best frame for alert or enqueue:", e)
 
     return final_result
+
 
 
 # ✅ NEW: Admin feedback check endpoint

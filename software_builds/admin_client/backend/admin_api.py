@@ -1,7 +1,7 @@
-import os, json, yaml
+import os, json, yaml, requests
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, UploadFile, Form, File, HTTPException
+from fastapi import APIRouter, UploadFile, Form, File, HTTPException, FastAPI
 from tempfile import NamedTemporaryFile
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
@@ -17,12 +17,24 @@ from hdic.cluster_enroll import build_cluster_prototypes
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"] = "127.0.0.1,localhost"
 
-ALERTS_FILE = Path("alerts.jsonl")
-ALERT_IMG_DIR = Path("received_alerts")
-ALERT_IMG_DIR.mkdir(exist_ok=True)
+app = FastAPI(title="Admin Manual Verification API")
 
+# ✅ Create upload directory
+UPLOAD_DIR = Path(__file__).parent / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ✅ Use absolute path for alerts file
+ALERTS_FILE = Path(__file__).parent / "manual_checks.jsonl"
+
+FIELD_API = "http://127.0.0.1:5001"
 
 router = APIRouter()
+
+# ✅ Mount static files BEFORE including router
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# ✅ Include router AFTER mounting static files
+app.include_router(router)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_DIR = REPO_ROOT / "db"
@@ -73,6 +85,17 @@ def save_jsonl(path: Path, rows: list[dict]):
         for r in rows:
             f.write(json.dumps(r) + "\n")
     os.replace(tmp, path)
+
+def notify_field_client(person_id, timestamp, status):
+    try:
+        r = requests.post(f"{FIELD_API}/verifications/update", json={
+            "person_id": person_id,
+            "timestamp": timestamp,
+            "status": "confirmed" if status=="confirm" else "rejected"
+        }, timeout=3)
+        print("[INFO] Callback to field client:", r.status_code)
+    except Exception as e:
+        print("[WARN] Callback failed:", e)
 
 @router.get("/list")
 def list_persons():
@@ -205,26 +228,44 @@ def update_config(cfg: dict):
 
 @router.post("/manual_check/receive")
 async def receive_manual_check(
-    person_id: str = Form(...),
-    similarity: float = Form(...),
     file: UploadFile = File(...),
+    person_id: str = Form(...),
+    score: float = Form(...),
+    timestamp: str = Form(...),
 ):
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = ALERT_IMG_DIR / f"{person_id}_{ts}.jpg"
-    with img_path.open("wb") as f:
-        f.write(await file.read())
+    """
+    Receives alert from Field Client when a match occurs.
+    Stores the image and metadata for manual verification.
+    """
+    try:
+        # Save image
+        filename = f"{person_id}_{timestamp}.jpg".replace(":", "-")
+        fpath = UPLOAD_DIR / filename
+        with open(fpath, "wb") as f:
+            f.write(await file.read())
 
-    alert = {
-        "person_id": person_id,
-        "similarity": float(similarity),
-        "timestamp": ts,
-        "file_path": f"/received_alerts/{img_path.name}",
-        "status": "pending"
-    }
-    alerts = load_jsonl(ALERTS_FILE)
-    alerts.append(alert)
-    save_jsonl(ALERTS_FILE, alerts)
-    return {"status": "received", "alert": alert}
+        # Log metadata
+        record = {
+            "person_id": person_id,
+            "score": score,
+            "timestamp": timestamp,
+            # ✅ Serve via FastAPI static route
+            "file_path": f"/uploads/{filename}",
+            "status": "pending",
+        }
+
+        print(f"[INFO] Received manual check alert: {record}")
+
+        # (Optional) Save to your admin DB / JSONL
+        db_file = Path(__file__).parent / "manual_checks.jsonl"
+        with open(db_file, "a", encoding="utf-8") as db:
+            db.write(json.dumps(record) + "\n")
+
+        return {"ok": True, "message": "Alert received", "data": record}
+
+    except Exception as e:
+        print("[ERROR] Failed to save manual check:", e)
+        return {"ok": False, "error": str(e)}
 
 @router.get("/manual_check/list")
 def list_alerts():
@@ -252,6 +293,7 @@ def update_decision(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     save_jsonl(ALERTS_FILE, alerts)
+    notify_field_client(person_id, timestamp, decision)
     return {"status": "updated"}
 
 @router.get("/manual_check/status")
