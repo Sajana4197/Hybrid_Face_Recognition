@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   Camera,
   ShieldCheck,
@@ -10,12 +16,12 @@ import {
   Loader,
   Info,
   RefreshCw,
-  ClipboardList, // Added
-  Menu, // Added
-  X, // Added
-  ChevronsLeft, // Added
-  ChevronsRight, // Added
-  UserCircle, // Added
+  ClipboardList,
+  Menu,
+  X,
+  ChevronsLeft,
+  ChevronsRight,
+  UserCircle,
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:5001";
@@ -26,20 +32,28 @@ export default function App() {
   const [decision, setDecision] = useState("");
   const [resultData, setResultData] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [health, setHealth] = useState("checking"); // Changed default
+  const [health, setHealth] = useState("checking");
   const [glowColor, setGlowColor] = useState("none");
   const glowTimerRef = useRef(null);
   const [adminStatus, setAdminStatus] = useState(null);
   const pollRef = useRef(null);
-
-  // --- States for new sidebar ---
   const [activeTab, setActiveTab] = useState("main");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  // ------------------------------
-
   const matchSoundRef = useRef(null);
   const noMatchSoundRef = useRef(null);
+
+  // Ref for admin decision sound
+  const verificationSoundRef = useRef(null);
+
+  const [verificationItems, setVerificationItems] = useState([]);
+  const [verificationLoading, setVerificationLoading] = useState(true);
+  const [verificationError, setVerificationError] = useState(null);
+
+  // --- ADDED: State to track *seen admin decisions* ---
+  const [lastSeenDecisionTimestamp, setLastSeenDecisionTimestamp] =
+    useState(null);
+  // --------------------------------------------------
 
   useEffect(() => {
     async function initCamera() {
@@ -88,6 +102,47 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // --- MODIFIED: loadVerifications is now simple ---
+  // It no longer plays sound or does complex state updates
+  const loadVerifications = useCallback(async (manual = false) => {
+    if (manual) setVerificationLoading(true);
+    setVerificationError(null);
+    try {
+      const r = await fetch(`${API_BASE}/verifications`);
+      if (!r.ok) throw new Error(`Failed: ${r.status}`);
+      const d = await r.json();
+      const sortedItems = (d.items || []).sort((a, b) =>
+        b.timestamp.localeCompare(a.timestamp)
+      );
+
+      // Just set the state. The `useMemo` will handle the badge.
+      setVerificationItems(sortedItems);
+    } catch (err) {
+      console.error("Failed to load verifications:", err);
+      setVerificationError(err.message);
+      setVerificationItems([]);
+    } finally {
+      if (manual) setVerificationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadVerifications(true);
+    const interval = setInterval(() => loadVerifications(false), 10000);
+    return () => clearInterval(interval);
+  }, [loadVerifications]);
+
+  // --- MODIFIED: This now counts *new admin decisions* ---
+  const newDecisionCount = useMemo(() => {
+    return verificationItems.filter(
+      (i) =>
+        (i.status === "confirmed" || i.status === "rejected") && // 1. It's a decided item
+        (!lastSeenDecisionTimestamp || // 2. We've never checked OR
+          (i.decision_time && i.decision_time > lastSeenDecisionTimestamp)) // 3. The decision is new
+    ).length;
+  }, [verificationItems, lastSeenDecisionTimestamp]);
+  // --------------------------------------------------------
+
   useEffect(() => {
     if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
     if (["MATCH", "ADMIN_REJECTED"].includes(decision)) {
@@ -102,21 +157,37 @@ export default function App() {
     return () => clearTimeout(glowTimerRef.current);
   }, [decision]);
 
+  // --- MODIFIED: pollAdminDecision now plays the sound ---
   async function pollAdminDecision(pid, ts) {
     if (!pid || !ts) return;
     if (pollRef.current) clearInterval(pollRef.current);
+
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(
           `${API_BASE}/check_status?person_id=${pid}&timestamp=${ts}`
         );
         const data = await res.json();
-        if (data.status === "confirmed") {
-          clearInterval(pollRef.current);
-          setAdminStatus("confirmed");
-        } else if (data.status === "rejected") {
-          clearInterval(pollRef.current);
-          setAdminStatus("rejected");
+
+        // Check if a decision has been made
+        if (data.status === "confirmed" || data.status === "rejected") {
+          clearInterval(pollRef.current); // Stop polling
+
+          // --- Play sound on admin decision ---
+          const audio = verificationSoundRef.current;
+          if (audio) {
+            audio.currentTime = 0;
+            audio
+              .play()
+              .catch((e) =>
+                console.warn("Admin decision sound play failed:", e)
+              );
+          }
+          // ------------------------------------
+
+          // Update the UI
+          setAdminStatus(data.status);
+          loadVerifications(false); // Refresh the list (this will trigger the badge)
         }
       } catch (e) {
         console.warn("Polling error:", e);
@@ -126,8 +197,13 @@ export default function App() {
 
   async function captureAndMatch() {
     if (busy) return;
+
+    // --- ADDED: Prime all audio sounds on user click ---
     if (matchSoundRef.current) matchSoundRef.current.load();
     if (noMatchSoundRef.current) noMatchSoundRef.current.load();
+    if (verificationSoundRef.current) verificationSoundRef.current.load();
+    // ---------------------------------------------------
+
     setGlowColor("none");
     if (glowTimerRef.current) clearTimeout(glowTimerRef.current);
     setBusy(true);
@@ -198,17 +274,38 @@ export default function App() {
     }
   }
 
-  // --- New Nav Items for Sidebar ---
+  // --- MODIFIED: Badge now uses newDecisionCount ---
   const navItems = [
     { id: "main", label: "Face Recognition", icon: <Camera size={20} /> },
     {
       id: "verifications",
       label: "Manual Verifications",
       icon: <ClipboardList size={20} />,
+      badge: newDecisionCount > 0 ? newDecisionCount : null,
     },
   ];
 
-  // --- New Health Status colors ---
+  // --- MODIFIED: Tab click now "sees" the latest *decision* ---
+  const handleVerificationTabClick = () => {
+    setActiveTab("verifications");
+    setSidebarOpen(false);
+
+    // Find the latest *decision time* among all decided items
+    const latestDecisionItem = verificationItems
+      .filter((i) => i.status === "confirmed" || i.status === "rejected")
+      .sort((a, b) => {
+        // Handle null/undefined decision_time
+        if (!a.decision_time) return 1;
+        if (!b.decision_time) return -1;
+        return b.decision_time.localeCompare(a.decision_time);
+      })[0]; // Get newest
+
+    if (latestDecisionItem && latestDecisionItem.decision_time) {
+      // Set the "last seen" to this timestamp
+      setLastSeenDecisionTimestamp(latestDecisionItem.decision_time);
+    }
+  };
+
   const healthStatus = {
     checking: {
       text: "Connecting...",
@@ -226,11 +323,8 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-black text-slate-200 overflow-hidden">
-      {/* Background gradients */}
       <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-gray-900 via-black to-gray-900"></div>
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[80%] h-[80%] bg-gradient-radial from-cyan-500/10 to-transparent blur-3xl"></div>
-
-      {/* --- New Sidebar --- */}
       <aside
         className={`fixed sm:relative z-20 flex h-full flex-col bg-slate-900/60 backdrop-blur-xl border-r border-cyan-500/10 transition-all duration-300 ease-in-out
           ${isCollapsed ? "sm:w-20" : "sm:w-64"}
@@ -268,8 +362,12 @@ export default function App() {
               <button
                 key={item.id}
                 onClick={() => {
-                  setActiveTab(item.id);
-                  setSidebarOpen(false);
+                  if (item.id === "verifications") {
+                    handleVerificationTabClick();
+                  } else {
+                    setActiveTab(item.id);
+                    setSidebarOpen(false);
+                  }
                 }}
                 className={`relative w-full flex items-center gap-3 rounded-lg transition-all duration-300 ${
                   isCollapsed ? "justify-center px-2 py-3" : "px-4 py-3"
@@ -289,6 +387,14 @@ export default function App() {
                   <span className="font-medium text-sm whitespace-nowrap">
                     {item.label}
                   </span>
+                )}
+                {!isCollapsed && item.badge && (
+                  <span className="ml-auto bg-rose-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full animate-pulse">
+                    {item.badge}
+                  </span>
+                )}
+                {isCollapsed && item.badge && (
+                  <span className="absolute top-2 right-2 w-3 h-3 bg-rose-600 rounded-full border-2 border-slate-900 animate-pulse"></span>
                 )}
               </button>
             ))}
@@ -329,7 +435,6 @@ export default function App() {
         </div>
       </aside>
 
-      {/* --- Mobile Overlay --- */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm sm:hidden z-10 animate-fadeIn"
@@ -337,7 +442,6 @@ export default function App() {
         />
       )}
 
-      {/* --- New Main Content Area --- */}
       <main className="relative flex-1 p-4 sm:p-8 overflow-y-auto">
         <header className="flex items-center justify-between mb-8 h-12">
           <button
@@ -346,8 +450,6 @@ export default function App() {
           >
             <Menu size={22} />
           </button>
-
-          {/* --- Header content from Border Control client --- */}
           <div className="flex items-center gap-3">
             <ShieldCheck className="w-8 h-8 text-cyan-400" />
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
@@ -359,10 +461,8 @@ export default function App() {
           >
             {healthStatus[health].text}
           </span>
-          {/* -------------------------------------------------- */}
         </header>
 
-        {/* --- Tab Content --- */}
         <div key={activeTab}>
           {activeTab === "main" && (
             <div className="animate-fadeIn">
@@ -388,10 +488,10 @@ export default function App() {
                     </div>
                   </div>
                   <p className="text-sm text-gray-400">
-                    Live camera feed — ensure face is centered
+                    Live camera feed. Ensure face is <strong>Centered</strong>
                   </p>
                 </div>
-                <div className="flex flex-col items-center gap-4">
+                <div className="flex flex-col items-center justify-center gap-4">
                   <button
                     onClick={captureAndMatch}
                     disabled={busy}
@@ -412,13 +512,19 @@ export default function App() {
                   <audio
                     ref={matchSoundRef}
                     id="matchSound"
-                    src="../public/match-sound.wav"
+                    src="/match-sound.wav"
                     preload="auto"
                   />
                   <audio
                     ref={noMatchSoundRef}
                     id="noMatchSound"
-                    src="../public/no-match-sound.mp3"
+                    src="/no-match-sound.mp3"
+                    preload="auto"
+                  />
+                  <audio
+                    ref={verificationSoundRef}
+                    id="verificationSound"
+                    src="../public/new-verification.mp3"
                     preload="auto"
                   />
                 </div>
@@ -428,7 +534,12 @@ export default function App() {
 
           {activeTab === "verifications" && (
             <div className="animate-fadeIn">
-              <VerificationPanel />
+              <VerificationPanel
+                items={verificationItems}
+                isLoading={verificationLoading}
+                error={verificationError}
+                loadVerifications={() => loadVerifications(true)}
+              />
             </div>
           )}
         </div>
@@ -437,34 +548,7 @@ export default function App() {
   );
 }
 
-function VerificationPanel() {
-  const [items, setItems] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  const load = async (manual = false) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(`${API_BASE}/verifications`);
-      if (!r.ok) throw new Error(`Failed: ${r.status}`);
-      const d = await r.json();
-      setItems(d.items || []);
-    } catch (err) {
-      console.error("Failed to load verifications:", err);
-      setError(err.message);
-      setItems([]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load(true);
-    const interval = setInterval(() => load(false), 10000);
-    return () => clearInterval(interval);
-  }, []);
-
+function VerificationPanel({ items, isLoading, error, loadVerifications }) {
   const formatTimestamp = (ts) => {
     try {
       const isoString = ts
@@ -479,14 +563,13 @@ function VerificationPanel() {
   };
 
   return (
-    // Note: Removed flex-1 and overflow-hidden, as the parent <main> now handles scrolling
     <div className="bg-gray-800/50 p-4 sm:p-6 rounded-2xl ring-1 ring-white/10 backdrop-blur-sm">
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl font-semibold text-white">
           Manual Verification Queue
         </h2>
         <button
-          onClick={() => load(true)}
+          onClick={loadVerifications}
           disabled={isLoading}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors disabled:bg-gray-600"
         >
@@ -579,9 +662,6 @@ function VerificationPanel() {
   );
 }
 
-// HealthStatus component is no longer needed here, it's part of the main App return
-// const HealthStatus = ...
-
 const DecisionDisplay = ({ decision, adminStatus }) => {
   const config = {
     MATCH: {
@@ -656,10 +736,8 @@ const ResultsSummary = ({ resultData }) => (
 );
 
 /* -------------------------- Global Styles & Animations -------------------------- */
-// All animations are injected here, so no external CSS file is needed for them.
 const style = document.createElement("style");
 style.innerHTML = `
-/* --- Sidebar Glow --- */
 @keyframes pulseGlow {
   0%, 100% {
     box-shadow: 0 0 8px rgba(34, 211, 238, 0.4), inset 0 0 6px rgba(34, 211, 238, 0.2);
@@ -671,8 +749,6 @@ style.innerHTML = `
 .animate-glow {
   animation: pulseGlow 2.5s ease-in-out infinite;
 }
-
-/* --- Content Fade In --- */
 @keyframes fadeIn { 
   from { opacity: 0; transform: translateY(10px); } 
   to { opacity: 1; transform: translateY(0); } 
@@ -680,8 +756,6 @@ style.innerHTML = `
 .animate-fadeIn { 
   animation: fadeIn 0.5s ease-in-out; 
 }
-
-/* --- Red/Green Pulse for Main Panel --- */
 @keyframes pulse-red {
   0%, 100% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); }
   50% { box-shadow: 0 0 15px rgba(239, 68, 68, 0.3); }
@@ -689,7 +763,6 @@ style.innerHTML = `
 .animate-pulse-red {
   animation: pulse-red 1s ease-in-out 5;
 }
-
 @keyframes pulse-green {
   0%, 100% { box-shadow: 0 0 30px rgba(34, 197, 94, 0.6); }
   50% { box-shadow: 0 0 15px rgba(34, 197, 94, 0.3); }

@@ -1,11 +1,16 @@
-import React, { useEffect, useState } from "react";
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import {
   Menu,
   X,
   UserPlus,
   UserMinus,
   Search,
-  BarChart2,
   Loader,
   RefreshCw,
   ChevronsLeft,
@@ -83,26 +88,164 @@ const Spinner = () => (
   </div>
 );
 
-const FileInput = (props) => (
-  <input
-    type="file"
-    {...props}
-    className="block w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-blue-500/90 hover:file:bg-blue-600 file:text-white transition cursor-pointer"
-  />
-);
-
 /* -------------------------------- Main App -------------------------------- */
 export default function App() {
   const [activeTab, setActiveTab] = useState("enroll");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [health, setHealth] = useState("checking");
+  const [manualAlerts, setManualAlerts] = useState([]);
+  const [alertsLoading, setAlertsLoading] = useState(true);
+  const [lastSeenPendingTimestamp, setLastSeenPendingTimestamp] =
+    useState(null);
+  const alertSoundRef = useRef(null);
+  const lastAlertedTimestampRef = useRef(null);
+  const audioPrimedRef = useRef(false); // Use ref to track priming status
 
+  // --- Health Check ---
   useEffect(() => {
     fetch(`${API}/health`)
       .then((r) => setHealth(r.ok ? "ok" : "down"))
       .catch(() => setHealth("down"));
   }, []);
+
+  // --- FIXED: One-time listener to prime audio on first user interaction ---
+  useEffect(() => {
+    // This function will run on the first click/touch
+    const primeAudio = () => {
+      // Check if ref exists and priming hasn't happened
+      if (alertSoundRef.current && !audioPrimedRef.current) {
+        const audio = alertSoundRef.current;
+        console.log("Attempting to prime audio via user interaction...");
+        try {
+          // Mute, play briefly, then pause to satisfy browser policy
+          audio.volume = 0;
+          const playPromise = audio.play();
+
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                // Success! Pause, reset volume, mark as primed.
+                audio.pause();
+                audio.currentTime = 0;
+                audio.volume = 1;
+                audioPrimedRef.current = true; // Update the ref
+                console.log(
+                  "✅ Audio successfully primed by user interaction."
+                );
+
+                // IMPORTANT: Remove listeners *after* success
+                document.removeEventListener("click", primeAudio, true);
+                document.removeEventListener("touchstart", primeAudio, true);
+              })
+              .catch((error) => {
+                console.warn("Audio priming play() failed:", error);
+                // Don't mark as primed if it failed
+                // Keep listeners active to try again on next interaction
+              });
+          } else {
+            console.warn(
+              "Audio element might not be ready for priming yet (playPromise undefined)."
+            );
+          }
+        } catch (err) {
+          console.error("Error during audio priming attempt:", err);
+          // Keep listeners active to try again
+        }
+      } else if (audioPrimedRef.current) {
+        // If somehow this runs after priming, just remove the listeners
+        document.removeEventListener("click", primeAudio, true);
+        document.removeEventListener("touchstart", primeAudio, true);
+      }
+    };
+
+    // Add listeners using capture phase for reliability
+    document.addEventListener("click", primeAudio, true);
+    document.addEventListener("touchstart", primeAudio, true);
+
+    // Cleanup function: remove listeners when component unmounts
+    return () => {
+      document.removeEventListener("click", primeAudio, true);
+      document.removeEventListener("touchstart", primeAudio, true);
+    };
+  }, []); // <-- Empty array: Run setup only once on mount
+  // -------------------------------------------------------------------
+
+  // --- Polling function (no audio logic here) ---
+  const loadAlerts = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/manual_check/list`);
+      const d = await r.json();
+      const sortedAlerts = (d.alerts || []).sort((a, b) =>
+        b.timestamp.localeCompare(a.timestamp)
+      );
+      setManualAlerts(sortedAlerts);
+    } catch (err) {
+      console.error("Failed to load alerts:", err);
+    }
+  }, []);
+
+  // --- Start polling on mount ---
+  useEffect(() => {
+    async function initialLoad() {
+      await loadAlerts();
+      setAlertsLoading(false);
+    }
+    initialLoad();
+    const interval = setInterval(loadAlerts, 5000);
+    return () => clearInterval(interval);
+  }, [loadAlerts]);
+
+  // --- useEffect to play sound when manualAlerts changes ---
+  useEffect(() => {
+    const newestPending = manualAlerts.find((a) => a.status === "pending");
+
+    if (newestPending) {
+      const newTimestamp = newestPending.timestamp;
+      const lastTimestamp = lastAlertedTimestampRef.current || "";
+
+      if (newTimestamp > lastTimestamp) {
+        const audio = alertSoundRef.current;
+
+        // Play only if audio priming was successful
+        if (audio && audioPrimedRef.current) {
+          // Check the ref
+          audio.currentTime = 0;
+          audio.play().catch((e) => {
+            console.warn(`Alert sound play failed for ${newTimestamp}:`, e);
+          });
+        } else if (!audioPrimedRef.current) {
+          // Log that priming is needed
+          console.log(
+            `Audio not yet primed for alert ${newTimestamp}. Click/touch page.`
+          );
+        }
+
+        lastAlertedTimestampRef.current = newTimestamp;
+      }
+    }
+  }, [manualAlerts]); // Only depends on manualAlerts
+
+  // --- Function to handle decision ---
+  async function handleManualDecision(a, decision) {
+    const form = new FormData();
+    form.append("person_id", a.person_id);
+    form.append("timestamp", a.timestamp);
+    form.append("decision", decision);
+    await fetch(`${API}/manual_check/decision`, { method: "POST", body: form });
+    await loadAlerts();
+  }
+
+  // --- Calculate *new* pending count for badge ---
+  const newPendingCount = useMemo(
+    () =>
+      manualAlerts.filter(
+        (a) =>
+          a.status === "pending" &&
+          (!lastSeenPendingTimestamp || a.timestamp > lastSeenPendingTimestamp)
+      ).length,
+    [manualAlerts, lastSeenPendingTimestamp]
+  );
 
   const navGroups = [
     {
@@ -110,13 +253,12 @@ export default function App() {
       items: [
         { id: "enroll", label: "Enroll", icon: <UserPlus size={20} /> },
         { id: "watchlist", label: "Watchlist", icon: <UserMinus size={20} /> },
-        { id: "manual", label: "Manual Check", icon: <Search size={20} /> },
-      ],
-    },
-    {
-      title: "System",
-      items: [
-        { id: "config", label: "Configuration", icon: <BarChart2 size={20} /> },
+        {
+          id: "manual",
+          label: "Manual Check",
+          icon: <Search size={20} />,
+          badge: newPendingCount > 0 ? newPendingCount : null,
+        },
       ],
     },
   ];
@@ -134,6 +276,14 @@ export default function App() {
     <div className="flex h-screen bg-black text-slate-200 overflow-hidden">
       <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-slate-900 via-black to-slate-900"></div>
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[80%] h-[80%] bg-gradient-radial from-emerald-500/10 to-transparent blur-3xl"></div>
+
+      {/* --- CORRECTED audio path --- */}
+      <audio
+        ref={alertSoundRef}
+        src="/new-verification.mp3" // Assumes it's in the /public folder
+        preload="auto"
+      />
+      {/* --------------------------- */}
 
       <aside
         className={`fixed sm:relative z-20 flex h-full flex-col bg-slate-900/60 backdrop-blur-xl border-r border-emerald-500/10 transition-all duration-300 ease-in-out
@@ -178,7 +328,17 @@ export default function App() {
                 {group.items.map((item) => (
                   <button
                     key={item.id}
+                    // --- REMOVED audio priming from onClick ---
                     onClick={() => {
+                      // Priming is handled globally now
+                      if (item.id === "manual") {
+                        const latestPending = manualAlerts.find(
+                          (a) => a.status === "pending"
+                        );
+                        if (latestPending) {
+                          setLastSeenPendingTimestamp(latestPending.timestamp);
+                        }
+                      }
                       setActiveTab(item.id);
                       setSidebarOpen(false);
                     }}
@@ -200,6 +360,14 @@ export default function App() {
                       <span className="font-medium text-sm whitespace-nowrap">
                         {item.label}
                       </span>
+                    )}
+                    {!isCollapsed && item.badge && (
+                      <span className="ml-auto bg-rose-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full animate-pulse">
+                        {item.badge}
+                      </span>
+                    )}
+                    {isCollapsed && item.badge && (
+                      <span className="absolute top-2 right-2 w-3 h-3 bg-rose-600 rounded-full border-2 border-slate-900 animate-pulse"></span>
                     )}
                   </button>
                 ))}
@@ -269,15 +437,27 @@ export default function App() {
         <div key={activeTab}>
           {activeTab === "enroll" && <EnrollView />}
           {activeTab === "watchlist" && <WatchlistView />}
-          {activeTab === "manual" && <ManualCheckView />}
-          {activeTab === "config" && <ConfigView />}
+          {activeTab === "manual" && (
+            <ManualCheckView
+              alerts={manualAlerts}
+              loading={alertsLoading}
+              onReload={async () => {
+                setAlertsLoading(true);
+                await loadAlerts();
+                setAlertsLoading(false);
+              }}
+              onDecide={handleManualDecision}
+            />
+          )}
         </div>
       </main>
     </div>
   );
 }
 
-/* ----------------------------- Feature Views (with Watchlist modified) ------------------------------ */
+/* ----------------------------- Feature Views ------------------------------ */
+// EnrollView, WatchlistView, ManualCheckView remain the same as your last version
+// ... (Paste the EnrollView, WatchlistView, ManualCheckView functions here) ...
 function EnrollView() {
   const [pid, setPid] = useState("");
   const [name, setName] = useState("");
@@ -311,7 +491,10 @@ function EnrollView() {
         setPid("");
         setName("");
         setFiles([]);
-        document.getElementById("file-upload").value = "";
+        const fileInput = document.getElementById("file-upload");
+        if (fileInput) {
+          fileInput.value = "";
+        }
       } else {
         setMsg({
           text: `Error: ${data.detail || "Enrollment failed"}`,
@@ -356,16 +539,14 @@ function EnrollView() {
           <label className="block text-sm font-medium text-slate-300 mb-2 tracking-wider">
             Upload Images from Folder
           </label>
-
-          {/* The `webkitdirectory` attribute is added here */}
           <input
             id="file-upload"
             type="file"
             className="hidden"
-            webkitdirectory="true"
+            webkitdirectory="" // Correct way to set boolean attribute
+            multiple // Allow multiple files selection (implied by webkitdirectory)
             onChange={(e) => setFiles(e.target.files)}
           />
-
           <label
             htmlFor="file-upload"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-md font-semibold transition-all duration-300 cursor-pointer bg-blue-500/80 hover:bg-blue-700 text-slate-200"
@@ -373,7 +554,6 @@ function EnrollView() {
             <Upload size={16} />
             Choose Folder...
           </label>
-
           {files.length > 0 && (
             <span className="ml-4 text-sm text-slate-400">
               {files.length} {files.length === 1 ? "file" : "files"} selected
@@ -497,84 +677,64 @@ function WatchlistView() {
   );
 }
 
-function ManualCheckView() {
-  const API = import.meta.env.VITE_ADMIN_API || "http://127.0.0.1:5002";
-  const [alerts, setAlerts] = React.useState([]);
-  const [loading, setLoading] = React.useState(false);
-
-  async function loadAlerts() {
-    setLoading(true);
-    try {
-      const r = await fetch(`${API}/manual_check/list`);
-      const d = await r.json();
-      setAlerts(d.alerts || []);
-    } finally {
-      setLoading(false);
-    }
-  }
-
+function ManualCheckView({ alerts, loading, onReload, onDecide }) {
   async function decide(a, decision) {
-    const form = new FormData();
-    form.append("person_id", a.person_id);
-    form.append("timestamp", a.timestamp);
-    form.append("decision", decision);
-    await fetch(`${API}/manual_check/decision`, { method: "POST", body: form });
-    loadAlerts();
+    await onDecide(a, decision);
   }
-
-  React.useEffect(() => {
-    loadAlerts();
-  }, []);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xl font-semibold">Manual Verification</h2>
-        <button
-          onClick={loadAlerts}
-          className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600"
-        >
+    <Card
+      title="Manual Verification Queue"
+      actions={
+        <Button onClick={onReload} variant="secondary" disabled={loading}>
+          <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
           Reload
-        </button>
-      </div>
-
-      {loading && <p className="text-sm text-slate-400">Loading…</p>}
-
-      {alerts.length === 0 ? (
-        <p className="text-slate-400 text-sm">No alerts.</p>
+        </Button>
+      }
+    >
+      {loading && alerts.length === 0 ? (
+        <Spinner />
+      ) : alerts.length === 0 ? (
+        <p className="text-center text-slate-400 p-6">
+          No alerts in the verification queue.
+        </p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {alerts.map((a, i) => (
             <div
               key={i}
-              className="bg-slate-800 p-4 rounded-lg border border-slate-700"
+              className="bg-slate-900/80 p-4 rounded-lg border border-slate-700/80"
             >
               <img
                 src={`${API}${a.file_path}`}
                 alt="capture"
                 className="w-full h-48 object-cover rounded mb-3 border border-slate-600"
               />
-              <div className="text-sm mb-3">
+              <div className="text-sm mb-3 space-y-1">
                 <div>
-                  <b>Person ID:</b> {a.person_id}
+                  <b>Person ID:</b>{" "}
+                  <span className="font-mono">{a.person_id}</span>
                 </div>
                 <div>
                   <b>Similarity:</b>{" "}
-                  {a.similarity?.toFixed?.(3) ?? a.similarity}
+                  <span className="font-medium text-emerald-300">
+                    {a.similarity?.toFixed?.(3) ?? a.similarity}
+                  </span>
                 </div>
                 <div>
-                  <b>Time:</b> {a.timestamp}
+                  <b>Time:</b>{" "}
+                  <span className="text-slate-400">{a.timestamp}</span>
                 </div>
                 <div>
                   <b>Status:</b>{" "}
                   <span
-                    className={
+                    className={`font-semibold ${
                       a.status === "pending"
                         ? "text-amber-300"
                         : a.status === "confirmed"
                         ? "text-emerald-300"
                         : "text-rose-300"
-                    }
+                    }`}
                   >
                     {a.status}
                   </span>
@@ -583,18 +743,20 @@ function ManualCheckView() {
 
               {a.status === "pending" ? (
                 <div className="flex gap-2">
-                  <button
+                  <Button
                     onClick={() => decide(a, "confirm")}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 px-3 py-1 rounded text-sm"
+                    variant="primary"
+                    className="flex-1 text-sm"
                   >
                     Confirm ✅
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     onClick={() => decide(a, "reject")}
-                    className="flex-1 bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded text-sm"
+                    variant="danger"
+                    className="flex-1 text-sm"
                   >
                     Reject ❌
-                  </button>
+                  </Button>
                 </div>
               ) : (
                 <div className="text-xs text-slate-400">
@@ -604,81 +766,6 @@ function ManualCheckView() {
             </div>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-function ConfigView() {
-  const [cfg, setCfg] = useState({});
-  const [msg, setMsg] = useState({ text: "", type: "info" });
-  const [isLoading, setIsLoading] = useState(true);
-  useEffect(() => {
-    fetch(`${API}/config`)
-      .then((r) => r.json())
-      .then(setCfg)
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
-  }, []);
-  async function save() {
-    setIsLoading(true);
-    setMsg({ text: "", type: "info" });
-    try {
-      const r = await fetch(`${API}/config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(cfg),
-      });
-      const d = await r.json();
-      setMsg(
-        r.ok
-          ? { text: "Success: Configuration saved!", type: "success" }
-          : { text: `Error: ${d.detail || "Save failed"}`, type: "error" }
-      );
-    } catch (e) {
-      setMsg({ text: `Error: ${e.message}`, type: "error" });
-    } finally {
-      setIsLoading(false);
-    }
-  }
-  const ConfigInput = ({ label, prop, step = 0.01 }) => (
-    <Input
-      label={label}
-      id={prop}
-      type="number"
-      step={step}
-      value={cfg[prop] || ""}
-      onChange={(e) => setCfg({ ...cfg, [prop]: Number(e.target.value) })}
-    />
-  );
-  const messageColors = {
-    info: "text-slate-400",
-    success: "text-emerald-400",
-    error: "text-rose-400",
-  };
-  return (
-    <Card title="System Thresholds & Configuration">
-      {isLoading ? (
-        <Spinner />
-      ) : (
-        <>
-          <div className="grid sm:grid-cols-3 gap-4">
-            <ConfigInput label="Tnh (NeuralHash)" prop="Tnh" step={1} />
-            <ConfigInput label="Thdic (HDIC)" prop="Thdic" step={1} />
-            <ConfigInput label="Fused Threshold (Sfinal)" prop="fused_th" />
-            <ConfigInput label="Weight NH (w_nh)" prop="w_nh" />
-            <ConfigInput label="Weight HDIC (w_hdic)" prop="w_hdic" />
-          </div>
-          <div className="mt-6 flex items-center gap-4">
-            <Button onClick={save} variant="primary" disabled={isLoading}>
-              {isLoading && <Loader size={16} className="animate-spin" />} Save
-              Configuration
-            </Button>
-            {msg.text && (
-              <p className={`text-sm ${messageColors[msg.type]}`}>{msg.text}</p>
-            )}
-          </div>
-        </>
       )}
     </Card>
   );
