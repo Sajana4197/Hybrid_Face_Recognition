@@ -14,12 +14,7 @@ from software_builds.field_client.backend.verifications import router as ver_rou
 
 # ---- Internal project imports ----
 from fusion.parallel_service import match_frame
-from preprocess.align import load_and_align
-from neuralhash.adapter import compute_hash_bits
-from hdic.feature_extractor import generate_embedding2
-from hdic.encode_hv import encode_embedding_to_hv
 from software_builds.field_client.backend.loader import load_watchlists
-from software_builds.field_client.backend.matcher import score_person_distances, fuse_parallel
 from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
