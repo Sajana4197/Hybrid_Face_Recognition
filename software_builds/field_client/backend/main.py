@@ -4,9 +4,10 @@ import requests
 import json, yaml, uvicorn, cv2, numpy as np
 from datetime import datetime
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Query
+from typing import List, Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.staticfiles import StaticFiles
 from io import BytesIO
@@ -19,6 +20,12 @@ from software_builds.field_client.backend.verifications import router as ver_rou
 
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"] = "127.0.0.1,localhost"
+
+# ---- DB imports (Neon / SQLAlchemy) ----
+# Requires db.py, models.py, crud.py as provided earlier
+from sqlalchemy.orm import Session
+from .db import init_db, get_db
+from . import crud
 
 # ----- FastAPI app -----
 app = FastAPI(title="Hybrid Field Client (Parallel NH+HDIC)")
@@ -50,6 +57,12 @@ ADMIN_API = CONFIG.get("admin_api", "http://127.0.0.1:5002")
 # Load merged watchlist (NH + HDIC)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONS = load_watchlists(REPO_ROOT)
+
+# ----- Startup: init DB schema -----
+@app.on_event("startup")
+def on_startup():
+    # Create tables if they don't exist (against Neon if DATABASE_URL is set)
+    init_db()
 
 # ---------- Utility ----------
 def log_match(entry: dict):
@@ -110,6 +123,53 @@ def update_config(payload: dict):
     CFG_PATH.write_text(yaml.safe_dump(cfg))
     return {"ok": True, "config": cfg}
 
+# ---------- Enrollment (stores embedding in Neon) ----------
+@app.post("/enroll")
+async def enroll(
+    person_name: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Enroll a new person by uploading a face image.
+    - Aligns the face
+    - Generates an embedding
+    - Stores the embedding in the cloud DB (Neon) via SQLAlchemy
+    """
+    # Read and decode image
+    img_bytes = await file.read()
+    img_array = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Invalid image")
+
+    # Align and validate face
+    try:
+        aligned = load_and_align(frame)  # expected BGR/RGB aligned face image
+        if aligned is None:
+            raise ValueError("No face detected")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Face alignment failed: {e}")
+
+    # Generate embedding (HDIC/FaceNet)
+    try:
+        embedding_vec = generate_embedding2(aligned)  # typically numpy array
+        if embedding_vec is None:
+            raise ValueError("Failed to generate embedding")
+        # Convert to JSON-serializable list of floats
+        embedding_list = np.asarray(embedding_vec, dtype=np.float32).flatten().tolist()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding generation failed: {e}")
+
+    # Store in DB
+    rec = crud.create_face_embedding(
+        db=db,
+        person_name=person_name,
+        embedding=embedding_list,
+        image_path=None,  # optionally store to object storage and save URL here
+    )
+    return {"ok": True, "id": rec.id, "person_name": rec.person_name}
+
 # ---------- Single-frame match ----------
 @app.post("/match")
 async def match(file: UploadFile = File(...)):
@@ -161,7 +221,7 @@ async def match_multi(files: List[UploadFile] = File(...)):
             decision = result.get("decision", "UNKNOWN")
             pid = result.get("person_id", None)
 
-            print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={Sfinal:.3f}")
+            print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={float(Sfinal):.3f}")
 
             return {
                 "index": idx + 1,
@@ -188,6 +248,7 @@ async def match_multi(files: List[UploadFile] = File(...)):
     match_count = sum(1 for r in results if r["decision"] == "MATCH")
     majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
 
+    # ---- Best frame (highest Sfinal) ----
     best_frame = max(results, key=lambda x: x.get("Sfinal", 0) or 0.0)
     best_score = best_frame.get("Sfinal", 0.0)
     best_pid = best_frame.get("person_id", None)
@@ -201,10 +262,10 @@ async def match_multi(files: List[UploadFile] = File(...)):
         "match_frames": match_count,
         "match_ratio": round(match_count / total, 2),
         "decision": majority_decision,
-        "best_score": round(best_score, 3),
+        "best_score": round(float(best_score), 3),
         "best_person_id": best_pid,
         "frame_details": results,
-        "timestamp": timestamp,
+        "timestamp": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
     }
 
     log_match(final_result)

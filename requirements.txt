@@ -2,17 +2,21 @@
 numpy
 scikit-learn
 scipy
-
-# Deep learning (for NeuralHash + HDIC)
-torch
-torchvision
-tensorflow
 pandas
-facenet-pytorch      # ArcFace / InceptionResnetV1 + MTCNN
-keras-facenet        # FaceNet embeddings (HDIC pipeline)
 
-# Image processing
-opencv-python
+# Deep learning (CPU-friendly)
+# torch and torchvision are installed in the Dockerfile from the CPU wheel index to avoid huge GPU downloads.
+# Do NOT add torch/torchvision here; they'll be preinstalled before this file is processed.
+facenet-pytorch            # Uses torch already installed in the image
+
+# TensorFlow pinned to avoid pulling CUDA/cuDNN pip packages
+# If you don't need the TF/Keras path, you can comment these out to shrink further.
+tensorflow==2.13.0
+keras==2.13.1
+keras-facenet
+
+# Image processing (headless is smaller than full OpenCV)
+opencv-python-headless
 Pillow
 
 # Utilities
@@ -20,8 +24,14 @@ tqdm
 pyyaml
 
 # Optional but useful
-matplotlib           # debugging / visualization
+matplotlib                 # debugging / visualization
 
-fastapi 
-uvicorn 
+# API
+fastapi
+uvicorn
 python-multipart
+
+# Added for cloud Postgres + config
+psycopg[binary]
+SQLAlchemy>=2.0
+python-dotenv
