@@ -1,6 +1,6 @@
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-
+import requests 
 import json, yaml, uvicorn, cv2, numpy as np
 from datetime import datetime
 from pathlib import Path
@@ -9,15 +9,17 @@ from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor
+from fastapi.staticfiles import StaticFiles
+from io import BytesIO
+from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
 
 # ---- Internal project imports ----
 from fusion.parallel_service import match_frame
-from preprocess.align import load_and_align
-from neuralhash.adapter import compute_hash_bits
-from hdic.feature_extractor import generate_embedding2
-from hdic.encode_hv import encode_embedding_to_hv
 from software_builds.field_client.backend.loader import load_watchlists
-from software_builds.field_client.backend.matcher import score_person_distances, fuse_parallel
+from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
+
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
 
 # ---- DB imports (Neon / SQLAlchemy) ----
 # Requires db.py, models.py, crud.py as provided earlier
@@ -35,6 +37,8 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+app.include_router(ver_router)
+
 # ----- Config loading -----
 CFG_PATH = Path(__file__).parent / "config.yaml"
 CONFIG = yaml.safe_load(CFG_PATH.read_text())
@@ -46,6 +50,9 @@ T_final = float(CONFIG.get("T_final", 0.7))
 PORT    = int(CONFIG.get("port", 5001))
 LOGPATH = Path(__file__).parent / (CONFIG.get("log_path", "logs/matches.jsonl"))
 LOGPATH.parent.mkdir(parents=True, exist_ok=True)
+
+# ✅ NEW: Load Admin API address from config.yaml
+ADMIN_API = CONFIG.get("admin_api", "http://127.0.0.1:5002")
 
 # Load merged watchlist (NH + HDIC)
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -62,6 +69,25 @@ def log_match(entry: dict):
     with LOGPATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+def send_manual_alert(person_id: str, score: float, image_bytes: bytes, timestamp: str):
+    """
+    Send captured best-match frame to Admin for manual verification.
+    Includes person ID, score, and timestamp.
+    """
+    try:
+        files = {"file": ("match.jpg", BytesIO(image_bytes), "image/jpeg")}
+        data = {"person_id": person_id, "score": score, "timestamp": timestamp}
+        r = requests.post(
+            f"{ADMIN_API}/manual_check/receive",
+            files=files,
+            data=data,
+            timeout=8,
+        )
+        print(f"[INFO] Sent manual verification alert: {r.status_code}")
+    except Exception as e:
+        print("[WARN] Failed to send manual verification alert:", e)
+
+
 # ---------- Health ----------
 @app.get("/health")
 def health():
@@ -70,19 +96,30 @@ def health():
 # ---------- Config endpoints ----------
 @app.get("/config")
 def get_config():
-    return {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic, "T_final": T_final}
+    return {
+        "Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh,
+        "w_hdic": w_hdic, "T_final": T_final,
+        "admin_api": ADMIN_API
+    }
 
 @app.post("/config")
 def update_config(payload: dict):
-    global Tnh, Thdic, w_nh, w_hdic, T_final
-    for k in ["Tnh","Thdic","w_nh","w_hdic","T_final"]:
+    global Tnh, Thdic, w_nh, w_hdic, T_final, ADMIN_API
+    for k in ["Tnh","Thdic","w_nh","w_hdic","T_final","admin_api"]:
         if k in payload:
-            val = float(payload[k])
-            if k in ("w_nh","w_hdic") and not (0.0 <= val <= 1.0):
+            val = payload[k]
+            if k in ("w_nh","w_hdic") and not (0.0 <= float(val) <= 1.0):
                 continue
-            locals()[k] = val
-    cfg = {"Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
-           "T_final": T_final, "port": PORT, "log_path": str(LOGPATH.relative_to(Path(__file__).parent))}
+            if k == "admin_api":
+                ADMIN_API = str(val)
+            else:
+                locals()[k] = float(val)
+    cfg = {
+        "Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
+        "T_final": T_final, "port": PORT,
+        "log_path": str(LOGPATH.relative_to(Path(__file__).parent)),
+        "admin_api": ADMIN_API
+    }
     CFG_PATH.write_text(yaml.safe_dump(cfg))
     return {"ok": True, "config": cfg}
 
@@ -149,15 +186,18 @@ async def match(file: UploadFile = File(...)):
     )
     result["frames"] = 1
     log_match(result)
+
+    # Send to admin on MATCH
+    if result.get("decision") == "MATCH":
+        pid = result.get("person_id") or "unknown"
+        sfinal = (result.get("scores") or {}).get("Sfinal", 0.0)
+        send_manual_alert(pid, sfinal, frame)
+
     return result
 
-# ---------- Multi-frame match (stable memory version) ----------
+# ---------- Multi-frame match ----------
 @app.post("/match_multi")
 async def match_multi(files: List[UploadFile] = File(...)):
-    """
-    Capture & match using multiple frames (e.g., 5 webcam images).
-    Each frame is matched independently; final decision = majority rule (>=3 MATCH).
-    """
     frames_data = [(i, await uf.read(), uf.filename) for i, uf in enumerate(files)]
 
     def process_single(idx, img_bytes, filename):
@@ -170,10 +210,8 @@ async def match_multi(files: List[UploadFile] = File(...)):
 
             result = match_frame(
                 frame_bgr=frame,
-                Tnh=Tnh,
-                Thdic=Thdic,
-                w_nh=w_nh,
-                w_hdic=w_hdic,
+                Tnh=Tnh, Thdic=Thdic,
+                w_nh=w_nh, w_hdic=w_hdic,
                 fused_th=T_final,
             )
 
@@ -189,11 +227,12 @@ async def match_multi(files: List[UploadFile] = File(...)):
                 "index": idx + 1,
                 "filename": filename,
                 "decision": decision,
-                "Sfinal": round(float(Sfinal), 3) if Sfinal is not None else None,
+                "Sfinal": float(Sfinal) if Sfinal is not None else None,
                 "d_nh": d_nh,
                 "d_hdic": d_hdic,
                 "person_id": pid,
             }
+
         except Exception as e:
             print(f"[WARN] Failed to process frame {idx+1}: {e}")
             return None
@@ -202,12 +241,9 @@ async def match_multi(files: List[UploadFile] = File(...)):
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = list(filter(None, ex.map(lambda args: process_single(*args), frames_data)))
 
-    # ---- Handle no valid results ----
     if not results:
-        print("[WARN] No valid frame results found — returning NO_FACE")
         return {"decision": "NO_FACE", "frames": 0}
 
-    # ---- Majority-based rule ----
     total = len(results)
     match_count = sum(1 for r in results if r["decision"] == "MATCH")
     majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
@@ -216,8 +252,10 @@ async def match_multi(files: List[UploadFile] = File(...)):
     best_frame = max(results, key=lambda x: x.get("Sfinal", 0) or 0.0)
     best_score = best_frame.get("Sfinal", 0.0)
     best_pid = best_frame.get("person_id", None)
+    best_idx = best_frame["index"] - 1
 
-    # ---- Final combined result ----
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
     final_result = {
         "method": "majority-of-N",
         "frames": total,
@@ -231,7 +269,42 @@ async def match_multi(files: List[UploadFile] = File(...)):
     }
 
     log_match(final_result)
+
+    # ---- Handle a MATCH (send to Admin + store locally) ----
+    if majority_decision == "MATCH" and best_pid:
+        try:
+            _, best_bytes, _ = frames_data[best_idx]
+            enqueue_case(best_pid, best_score, best_bytes)  # Store locally
+
+            # Send to Admin for manual confirmation
+            send_manual_alert(
+                person_id=best_pid,
+                score=best_score,
+                image_bytes=best_bytes,
+                timestamp=timestamp,
+            )
+        except Exception as e:
+            print("[WARN] Failed to prepare best frame for alert or enqueue:", e)
+
     return final_result
+
+
+
+# ✅ NEW: Admin feedback check endpoint
+@app.get("/check_status")
+def check_admin_status(person_id: str, timestamp: str):
+    try:
+        r = requests.get(
+            f"{ADMIN_API}/manual_check/status",
+            params={"person_id": person_id, "timestamp": timestamp},
+            timeout=5,
+            proxies={"http": None, "https": None}
+        )
+        return r.json()
+    except Exception as e:
+        print("[WARN] Failed to query admin for status:", e)
+        return {"status": "unknown", "error": str(e)}
+
 
 # ---------- Entry ----------
 if __name__ == "__main__":

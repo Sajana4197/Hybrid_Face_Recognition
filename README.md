@@ -19,18 +19,48 @@ Ideal for high-security applications like border control.
 
 ---
 
+## 🧩 System Architecture — Field & Admin Clients (Extended)
+
+This hybrid system extends beyond standard recognition by integrating a **two-tier verification model** designed for border-control-style deployments.
+
+### 🧠 Field Client (On-Site Recognition)
+
+- Detects and matches faces in real-time using **NeuralHash + HDIC** fusion.
+- Captures multiple frames and performs **majority-based matching**.
+- Automatically sends **best-match alerts** (image, ID, score, timestamp) to the **Admin Client** for manual confirmation.
+- Provides **audio and visual feedback** for matches and non-matches.
+- Displays recent verification feedback received from Admin.
+
+### 🧍‍♂️ Admin Client (Central Command Center)
+
+- Receives **manual verification requests** from Field Clients.
+- Displays captured face, predicted ID, and match score for operator review.
+- Admin can **accept** (confirm identity) or **reject** (deny match).
+- Feedback is sent back to Field Clients in real-time and logged locally.
+- Manages watchlist database (enroll, remove, configure thresholds).
+
+---
+
 ## 📂 Structure
 
 ```bash
 Hybrid_Face_Recognition/
-├── cli/          # CLI tools (enroll, atch, evaluate, match_parallel)
-├── common/       # Utilities (hamming, io)
-├── preprocess/   # Face alignment (MTCNN)
-├── neuralhash/   # NeuralHash pipeline (96-bit hashes)
-├── hdic/         # HDIC pipeline (hypervectors)
-├── fusion/       # Fusion strategies (cascade, parallel)
-├── db/           # JSONL databases
-├── dataset/      # Images (enroll, probe, test)
+├── cli/                  # CLI utilities
+├── common/               # Shared modules
+├── preprocess/           # MTCNN-based face alignment
+├── neuralhash/           # NeuralHash pipeline
+├── hdic/                 # HDIC hypervector encoding
+├── fusion/               # Fusion algorithms (cascade / parallel)
+├── db/                   # JSONL watchlists
+├── software_builds/
+│   ├── field_client/     # Field checkpoint system
+│   │   ├── backend/      # FastAPI + matching backend
+│   │   └── ui/           # React + Tailwind frontend
+│   └── admin_client/     # Central admin interface
+│       ├── backend/      # FastAPI backend for manual checks
+│       └── ui/           # React + Tailwind admin dashboard
+└── dataset/              # Images for enrollment/testing
+
 
 ```
 
@@ -84,4 +114,72 @@ Open-set:
 
 ```bash
 python -m cli.evaluate_ident --test_root dataset/test --unknown_root dataset/test_unknown --K 5 --Tnh 20,25,30 --Thdic 2000:4000:200
+```
+
+### 4. Software Systems (Field & Admin Clients)
+
+Beyond CLI tools, this hybrid system includes two interactive software applications for deployment and supervision:
+
+### i. Field Client Software
+
+The **Field Client** performs real-time face recognition using webcam feeds.  
+It integrates the **Parallel NH + HDIC** fusion engine with visual and audio feedback.
+
+🚀 Start Admin Backend:
+
+From the existing virtual environment, run:
+
+```bash
+cd software_builds/field_client/backend
+uvicorn main:app --reload --port 5001
+```
+
+💻 Start Field Client UI:
+
+Open another terminal and run;
+
+```bash
+cd software_builds/field_client/ui
+npm install
+npm run start
+```
+
+### ii. Admin Client Software
+
+The Admin Client acts as a central verification console.
+It receives alerts from all field clients and lets authorized officers manually confirm or reject them.
+
+🚀 Start Admin Backend:
+
+From the same virtual environment:
+
+```bash
+cd software_builds/admin_client/backend
+uvicorn admin_api:app --reload --port 5002
+```
+
+💻 Start Admin UI:
+
+Open another terminal and run;
+
+```bash
+cd software_builds/admin_client/ui/admin_ui
+npm install
+npm run dev
+```
+
+---
+
+## 🔁 Field–Admin Communication Flow
+
+```bash
+[ Field Camera ]
+     ↓
+  Detection & Fusion (NH + HDIC)
+     ↓
+  MATCH → Best Frame Sent → [ Admin Backend ]
+                                  ↓
+                    Manual Review → Accept / Reject
+                                  ↓
+           Feedback Returned → [ Field Client UI ]
 ```

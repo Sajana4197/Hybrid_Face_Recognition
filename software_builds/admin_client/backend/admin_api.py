@@ -1,8 +1,10 @@
-import os, json, yaml
+import os, json, yaml, requests
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, UploadFile, Form, File, HTTPException
+from fastapi import APIRouter, UploadFile, Form, File, HTTPException, FastAPI
 from tempfile import NamedTemporaryFile
+from fastapi.staticfiles import StaticFiles
+from datetime import datetime
 import numpy as np
 
 # ---- Import your real modules (unchanged) ----
@@ -12,7 +14,27 @@ from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from hdic.cluster_enroll import build_cluster_prototypes
 
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
+
+app = FastAPI(title="Admin Manual Verification API")
+
+# ✅ Create upload directory
+UPLOAD_DIR = Path(__file__).parent / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ✅ Use absolute path for alerts file
+ALERTS_FILE = Path(__file__).parent / "manual_checks.jsonl"
+
+FIELD_API = "http://127.0.0.1:5001"
+
 router = APIRouter()
+
+# ✅ Mount static files BEFORE including router
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# ✅ Include router AFTER mounting static files
+app.include_router(router)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_DIR = REPO_ROOT / "db"
@@ -50,6 +72,30 @@ def find_person(rows: list[dict], pid: str):
         if r.get("person_id") == pid:
             return r
     return None
+
+def load_jsonl(path: Path):
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+def save_jsonl(path: Path, rows: list[dict]):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, path)
+
+def notify_field_client(person_id, timestamp, status):
+    try:
+        r = requests.post(f"{FIELD_API}/verifications/update", json={
+            "person_id": person_id,
+            "timestamp": timestamp,
+            "status": "confirmed" if status=="confirm" else "rejected"
+        }, timeout=3)
+        print("[INFO] Callback to field client:", r.status_code)
+    except Exception as e:
+        print("[WARN] Callback failed:", e)
 
 @router.get("/list")
 def list_persons():
@@ -178,3 +224,89 @@ def update_config(cfg: dict):
     with open(CFG_FILE, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     return dict(status="updated", config=cfg)
+
+
+@router.post("/manual_check/receive")
+async def receive_manual_check(
+    file: UploadFile = File(...),
+    person_id: str = Form(...),
+    score: float = Form(...),
+    timestamp: str = Form(...),
+):
+    """
+    Receives alert from Field Client when a match occurs.
+    Stores the image and metadata for manual verification.
+    """
+    try:
+        # Save image
+        filename = f"{person_id}_{timestamp}.jpg".replace(":", "-")
+        fpath = UPLOAD_DIR / filename
+        with open(fpath, "wb") as f:
+            f.write(await file.read())
+
+        # Log metadata
+        record = {
+            "person_id": person_id,
+            "score": score,
+            "timestamp": timestamp,
+            # ✅ Serve via FastAPI static route
+            "file_path": f"/uploads/{filename}",
+            "status": "pending",
+        }
+
+        print(f"[INFO] Received manual check alert: {record}")
+
+        # (Optional) Save to your admin DB / JSONL
+        db_file = Path(__file__).parent / "manual_checks.jsonl"
+        with open(db_file, "a", encoding="utf-8") as db:
+            db.write(json.dumps(record) + "\n")
+
+        return {"ok": True, "message": "Alert received", "data": record}
+
+    except Exception as e:
+        print("[ERROR] Failed to save manual check:", e)
+        return {"ok": False, "error": str(e)}
+
+@router.get("/manual_check/list")
+def list_alerts():
+    return {"alerts": load_jsonl(ALERTS_FILE)}
+
+@router.post("/manual_check/decision")
+def update_decision(
+    person_id: str = Form(...),
+    timestamp: str = Form(...),
+    decision: str = Form(...),  # "confirm" or "reject"
+):
+    decision = decision.lower().strip()
+    if decision not in ("confirm", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be confirm|reject")
+
+    alerts = load_jsonl(ALERTS_FILE)
+    found = False
+    for a in alerts:
+        if a["person_id"] == person_id and a["timestamp"] == timestamp:
+            a["status"] = "confirmed" if decision == "confirm" else "rejected"
+            a["decision_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    save_jsonl(ALERTS_FILE, alerts)
+    notify_field_client(person_id, timestamp, decision)
+    return {"status": "updated"}
+
+@router.get("/manual_check/status")
+def get_status(person_id: str, timestamp: str):
+    """
+    Field client polls this endpoint to know if admin has reviewed the alert.
+    """
+    alerts = load_jsonl(ALERTS_FILE)
+    for a in alerts:
+        if a["person_id"] == person_id and a["timestamp"] == timestamp:
+            return {
+                "status": a.get("status", "pending"),
+                "decision_time": a.get("decision_time", None)
+            }
+    return {"status": "unknown"}
+
