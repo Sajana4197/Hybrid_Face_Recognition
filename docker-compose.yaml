@@ -1,0 +1,28 @@
+services:
+  field_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hybrid-face-recognition:latest
+    container_name: field_api
+    env_file:
+      - .env
+    command: uvicorn software_builds.field_client.backend.main:app --host 0.0.0.0 --port 5001
+    ports:
+      - "5001:5001"
+    restart: unless-stopped
+
+  admin_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hybrid-face-recognition:latest
+    container_name: admin_api
+    env_file:
+      - .env
+    command: uvicorn software_builds.admin_client.backend.main:app --host 0.0.0.0 --port 5002
+    ports:
+      - "5002:5002"
+    restart: unless-stopped
+    depends_on:
+      - field_api

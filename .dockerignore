@@ -1,0 +1,72 @@
+# Start by excluding everything
+*
+
+# Re-include only what's needed for the build
+!.dockerignore
+!Dockerfile
+!requirements.txt
+
+# App code actually imported at runtime
+!software_builds/field_client/backend/**
+!software_builds/admin_client/backend/**
+
+# Core modules used by the backend imports
+!fusion/**
+!preprocess/**
+!neuralhash/**
+!hdic/**
+
+# Keep essential small config files if they live elsewhere
+!**/config.yaml
+!**/*.py
+
+# Still exclude heavy artifacts even inside included dirs
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Very large files to exclude everywhere
+**/*.pt
+**/*.pth
+**/*.h5
+**/*.ckpt
+**/*.onnx
+**/*.npy
+**/*.npz
+**/*.zip
+**/*.tar
+**/*.tar.gz
+**/*.tgz
+**/*.7z
+**/*.rar
+**/*.iso
+**/*.mp4
+**/*.mov
+**/*.avi
+**/*.mkv
+**/*.webm
+**/*.wav
+
+# Local envs, caches, datasets, logs, uploads
+.venv/
+venv/
+env/
+data/
+datasets/
+db/
+logs/
+outputs/
+runs/
+media/
+uploads/
+software_builds/**/verifications/
+software_builds/**/uploads/
+
+# VCS/editor files
+.git
+.git/
+**/.git
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,66 @@
+pipeline {
+  agent any
+
+  environment {
+    IMAGE_NAME = "hybrid-face-recognition"
+    DOCKERHUB_NAMESPACE = "your-namespace" // change this
+    // Create a Jenkins Secret Text credential with ID 'NEON_DATABASE_URL'
+    DATABASE_URL = credentials('NEON_DATABASE_URL')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Build image') {
+      steps {
+        sh """
+          docker build -t ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:${BUILD_NUMBER} .
+          docker tag ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:${BUILD_NUMBER} ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:latest
+        """
+      }
+    }
+
+    stage('Push image') {
+      environment {
+        // Create Jenkins usernamePassword creds with ID 'DOCKERHUB_CREDS'
+        DOCKERHUB_CREDS = credentials('DOCKERHUB_CREDS')
+      }
+      steps {
+        sh '''
+          echo "$DOCKERHUB_CREDS_PSW" | docker login -u "$DOCKERHUB_CREDS_USR" --password-stdin
+          docker push ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:${BUILD_NUMBER}
+          docker push ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:latest
+        '''
+      }
+    }
+
+    // Example local deploy on the Jenkins agent. Adjust for your infra (SSH to server, K8s, etc.)
+    stage('Deploy') {
+      when { expression { return false } } // set to true when ready
+      steps {
+        sh '''
+          docker rm -f field_api || true
+          docker rm -f admin_api || true
+
+          docker run -d --name field_api \
+            -e DATABASE_URL="${DATABASE_URL}" \
+            -p 5001:5001 \
+            ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:latest \
+            uvicorn software_builds.field_client.backend.main:app --host 0.0.0.0 --port 5001
+
+          docker run -d --name admin_api \
+            -e DATABASE_URL="${DATABASE_URL}" \
+            -p 5002:5002 \
+            ${DOCKERHUB_NAMESPACE}/${IMAGE_NAME}:latest \
+            uvicorn software_builds.admin_client.backend.main:app --host 0.0.0.0 --port 5002
+        '''
+      }
+    }
+  }
+
+  post {
+    always { sh 'docker image prune -f || true' }
+  }
+}
