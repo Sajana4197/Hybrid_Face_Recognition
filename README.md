@@ -155,7 +155,7 @@ From the same virtual environment:
 
 ```bash
 cd software_builds/admin_client/backend
-uvicorn admin_api:app --reload --port 5002
+uvicorn main:app --reload --port 5002
 ```
 
 💻 Start Admin UI:
