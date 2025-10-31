@@ -1,4 +1,5 @@
-import os, json, yaml, requests
+import os, json, yaml, requests, sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, UploadFile, Form, File, HTTPException, FastAPI
@@ -7,6 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 import numpy as np
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # ---- Import your real modules (unchanged) ----
 from preprocess.align import load_and_align
 from neuralhash.adapter import compute_hash_bits
@@ -14,27 +17,13 @@ from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from hdic.cluster_enroll import build_cluster_prototypes
 
-os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-os.environ["no_proxy"] = "127.0.0.1,localhost"
+router = APIRouter()
 
-app = FastAPI(title="Admin Manual Verification API")
-
-# ✅ Create upload directory
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# ✅ Use absolute path for alerts file
 ALERTS_FILE = Path(__file__).parent / "manual_checks.jsonl"
-
-FIELD_API = "http://127.0.0.1:5001"
-
-router = APIRouter()
-
-# ✅ Mount static files BEFORE including router
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
-# ✅ Include router AFTER mounting static files
-app.include_router(router)
+FIELD_API = "http://127.0.0.1:5001"  # Field client backend API
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_DIR = REPO_ROOT / "db"
