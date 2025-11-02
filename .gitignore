@@ -32,6 +32,7 @@ logs/
 *.err
 
 # Data
+supportive/dataset_test_hq
 dataset/
 data/
 images/
