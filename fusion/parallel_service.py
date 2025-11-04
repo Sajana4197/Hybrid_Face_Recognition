@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile, os, cv2, numpy as np
 import json
+import time  # ✅ ADD: For performance timing
 
 # --- Use your real modules ---
 from preprocess.align import load_and_align          # aligns using MTCNN
@@ -103,27 +104,55 @@ def match_frame(
     """
     Full parallel NH + HDIC pipeline for a webcam frame.
     Reuses your original logic from match_parallel.py.
+    ✅ NOW WITH DETAILED DISTANCE LOGGING
     """
+    
+    # ✅ START TIMING
+    start_time = time.time()
+    print("\n" + "="*80)
+    print(f"🔍 STARTING FACE RECOGNITION MATCH")
+    print("="*80)
 
     # 1️⃣ Face alignment
+    align_start = time.time()
     face_rgb = _align_from_frame(frame_bgr)
+    align_time = time.time() - align_start
+    
     if face_rgb is None:
+        print("❌ NO FACE DETECTED")
+        print(f"⏱️  Alignment time: {align_time*1000:.1f}ms")
+        print("="*80 + "\n")
         return {"decision": "NO_FACE", "person_id": None, "scores": {}}
+    
+    print(f"✅ Face aligned successfully: {face_rgb.shape}")
+    print(f"⏱️  Alignment time: {align_time*1000:.1f}ms")
 
     # 2️⃣ Feature extraction (real modules)
     try:
-        print("[DEBUG] Align success:", face_rgb.shape)
+        feature_start = time.time()
+        
+        print("\n📊 EXTRACTING FEATURES...")
+        nh_start = time.time()
         probe_nh = compute_hash_bits(face_rgb)
-        print("[DEBUG] NH OK")
+        nh_time = time.time() - nh_start
+        print(f"  ✓ NeuralHash computed: 96 bits | Time: {nh_time*1000:.1f}ms")
 
+        emb_start = time.time()
         embedding = generate_embedding2(face_rgb)  # 512-D FaceNet features
-        print("[DEBUG] Embedding shape:", embedding.shape)
+        emb_time = time.time() - emb_start
+        print(f"  ✓ FaceNet embedding: {embedding.shape} | Time: {emb_time*1000:.1f}ms")
 
+        hdic_start = time.time()
         probe_hv = encode_embedding_to_hv(embedding).astype(np.float32)  # 10k-D HDIC HV
-        print("[DEBUG] HDIC OK")
+        hdic_time = time.time() - hdic_start
+        print(f"  ✓ HDIC hypervector: {probe_hv.shape} | Time: {hdic_time*1000:.1f}ms")
+        
+        feature_time = time.time() - feature_start
+        print(f"⏱️  Total feature extraction: {feature_time*1000:.1f}ms")
 
     except Exception as e:
-        print("[ERROR] Encoding failed:", e)
+        print(f"\n❌ ERROR during feature extraction: {e}")
+        print("="*80 + "\n")
         return {
             "decision": "ERROR",
             "error": f"Encoding failed: {e}",
@@ -132,19 +161,53 @@ def match_frame(
         }
 
     # 3️⃣ Load both watchlists
+    watchlist_start = time.time()
     nh_map, hd_map = _load_watchlists_jsonl(REPO_ROOT)
     person_ids = sorted(set(nh_map.keys()) & set(hd_map.keys()))
+    watchlist_time = time.time() - watchlist_start
+    
     if not person_ids:
+        print("\n❌ ERROR: Empty watchlist")
+        print("="*80 + "\n")
         return {"decision": "ERROR", "error": "Empty watchlist", "person_id": None, "scores": {}}
+    
+    print(f"\n📋 Loaded {len(person_ids)} persons from watchlist | Time: {watchlist_time*1000:.1f}ms")
 
     # 4️⃣ Score each person
+    print("\n" + "-"*80)
+    print("🎯 COMPUTING DISTANCES FOR ALL PERSONS")
+    print("-"*80)
+    print(f"{'Person ID':<15} {'NH Dist':<10} {'HDIC Dist':<12} {'S_NH':<8} {'S_HDIC':<10} {'S_final':<10} {'Status':<15}")
+    print("-"*80)
+    
+    matching_start = time.time()
     best_pid, best_sfinal, best_metrics = None, -1.0, None
+    all_scores = []
+    
     for pid in person_ids:
         d_nh = _nh_min_distance(probe_nh, nh_map.get(pid, []))
         d_hdic = _hdic_min_distance(probe_hv, hd_map.get(pid, []))
         Snh = 1.0 - (d_nh / 96.0)
         Shdic_norm = 1.0 - (d_hdic / 10000.0)  # normalization for fusion
         Sfinal = (w_nh * Snh) + (w_hdic * Shdic_norm)
+        
+        # ✅ Determine pass/fail for each gate
+        nh_pass = "✓" if d_nh < Tnh else "✗"
+        hdic_pass = "✓" if d_hdic < Thdic else "✗"
+        fused_pass = "✓" if Sfinal >= fused_th else "✗"
+        status = f"NH{nh_pass} HD{hdic_pass} F{fused_pass}"
+        
+        # ✅ Print each person's scores
+        print(f"{pid:<15} {d_nh:<10} {d_hdic:<12.0f} {Snh:<8.3f} {Shdic_norm:<10.3f} {Sfinal:<10.3f} {status:<15}")
+        
+        all_scores.append({
+            "person_id": pid,
+            "d_nh": d_nh,
+            "d_hdic": d_hdic,
+            "Snh": Snh,
+            "Shdic_norm": Shdic_norm,
+            "Sfinal": Sfinal
+        })
 
         if Sfinal > best_sfinal:
             best_sfinal = Sfinal
@@ -157,7 +220,13 @@ def match_frame(
                 "Sfinal": Sfinal,
             }
 
+    matching_time = time.time() - matching_start
+    print("-"*80)
+    print(f"⏱️  Matching time: {matching_time*1000:.1f}ms")
+
     if best_pid is None:
+        print("\n❌ NO MATCH FOUND")
+        print("="*80 + "\n")
         return {"decision": "NO_MATCH", "person_id": None, "scores": {}}
 
     # 5️⃣ Apply your original triple-gate rule
@@ -167,5 +236,31 @@ def match_frame(
         and (best_metrics["Sfinal"] >= fused_th)
     )
     decision = "MATCH" if is_match else "NO_MATCH"
+    
+    # ✅ FINAL RESULTS
+    print("\n" + "="*80)
+    print("🏆 BEST MATCH RESULTS")
+    print("="*80)
+    print(f"Person ID:         {best_pid}")
+    print(f"Decision:          {decision}")
+    print(f"\n📏 Distances:")
+    print(f"  NH Distance:     {best_metrics['d_nh']} / 96  (threshold: {Tnh})")
+    print(f"  HDIC Distance:   {best_metrics['d_hdic']:.0f} / 10000  (threshold: {Thdic})")
+    print(f"\n📊 Similarity Scores:")
+    print(f"  S_NH:            {best_metrics['Snh']:.4f}")
+    print(f"  S_HDIC:          {best_metrics['Shdic_norm']:.4f}")
+    print(f"  S_final:         {best_metrics['Sfinal']:.4f}  (threshold: {fused_th})")
+    print(f"\n✅ Gate Status:")
+    print(f"  NH Gate:         {'PASS ✓' if best_metrics['d_nh'] < Tnh else 'FAIL ✗'}")
+    print(f"  HDIC Gate:       {'PASS ✓' if best_metrics['d_hdic'] < Thdic else 'FAIL ✗'}")
+    print(f"  Fused Gate:      {'PASS ✓' if best_metrics['Sfinal'] >= fused_th else 'FAIL ✗'}")
+    
+    total_time = time.time() - start_time
+    print(f"\n⏱️  TOTAL TIME: {total_time*1000:.1f}ms")
+    print("  ├─ Alignment:    {:.1f}ms ({:.1f}%)".format(align_time*1000, align_time/total_time*100))
+    print("  ├─ Features:     {:.1f}ms ({:.1f}%)".format(feature_time*1000, feature_time/total_time*100))
+    print("  ├─ Watchlist:    {:.1f}ms ({:.1f}%)".format(watchlist_time*1000, watchlist_time/total_time*100))
+    print("  └─ Matching:     {:.1f}ms ({:.1f}%)".format(matching_time*1000, matching_time/total_time*100))
+    print("="*80 + "\n")
 
     return {"decision": decision, "person_id": best_pid, "scores": best_metrics}
