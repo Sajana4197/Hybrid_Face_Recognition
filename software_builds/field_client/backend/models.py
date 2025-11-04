@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy import Column, String, DateTime, func, JSON
-from .db import Base
+from .field_database import Base
 
 class FaceEmbedding(Base):
     __tablename__ = "face_embeddings"

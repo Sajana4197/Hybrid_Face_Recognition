@@ -7,7 +7,7 @@ import time
 import threading
 import atexit
 
-REPO_ROOT = Path(__file__).parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DB_DIR = REPO_ROOT / "db"
 
 NH_FILE = DB_DIR / "watchlist_neuralhash.jsonl"

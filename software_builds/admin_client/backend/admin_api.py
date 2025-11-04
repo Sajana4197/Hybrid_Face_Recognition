@@ -17,6 +17,9 @@ from hdic.feature_extractor import generate_embedding2
 from hdic.encode_hv import encode_embedding_to_hv
 from hdic.cluster_enroll import build_cluster_prototypes
 
+# ✅ Import cache manager
+from db.cache_manager import rebuild_cache_async
+
 router = APIRouter()
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
@@ -62,19 +65,6 @@ def find_person(rows: list[dict], pid: str):
             return r
     return None
 
-def load_jsonl(path: Path):
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-def save_jsonl(path: Path, rows: list[dict]):
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r) + "\n")
-    os.replace(tmp, path)
-
 def notify_field_client(person_id, timestamp, status):
     try:
         r = requests.post(f"{FIELD_API}/verifications/update", json={
@@ -113,9 +103,7 @@ async def enroll_person(
     files: List[UploadFile] = File(...),
 ):
     """
-    Enroll or add images:
-    - NH: append 96-bit 0/1 arrays to 'hashes'
-    - HDIC: append binary HVs to 'prototypes' as p{idx}
+    ✅ AUTOMATIC: Enrolls person and triggers cache rebuild
     """
     ensure_files()
     nh = load_jsonl(NH_FILE)
@@ -132,8 +120,6 @@ async def enroll_person(
     added = 0
     failed = 0
     embeddings = []
-    added = 0
-    failed = 0
 
     for _idx, uf in enumerate(files):
         tmp_path = None
@@ -165,10 +151,7 @@ async def enroll_person(
 
     # === Perform HDIC clustering ===
     if len(embeddings) > 0:
-        # Encode all embeddings → HVs (10k-D binary)
         hvs = [encode_embedding_to_hv(e) for e in embeddings]
-
-        # Cluster into groups (same as your original HDIC)
         try:
             prototypes = build_cluster_prototypes(hvs, num_clusters=3)
             hdr["prototypes"] = {k: v.tolist() for k, v in prototypes.items()}
@@ -180,18 +163,24 @@ async def enroll_person(
     save_jsonl(NH_FILE, nh)
     save_jsonl(HDIC_FILE, hd)
 
+    # ✅ AUTOMATIC CACHE REBUILD (non-blocking)
+    print("[INFO] 🔄 Triggering automatic cache rebuild...")
+    rebuild_cache_async()
+
     return dict(
         status="ok",
         person_id=person_id,
         added_images=added,
         failed_images=failed,
         total=len(files),
-        clusters=len(hdr["prototypes"])
+        clusters=len(hdr["prototypes"]),
+        cache_status="rebuilding"  # ✅ Indicate cache is being rebuilt
     )
 
 
 @router.delete("/delete/{person_id}")
 def delete_person(person_id: str):
+    """✅ AUTOMATIC: Deletes person and triggers cache rebuild"""
     ensure_files()
     nh = load_jsonl(NH_FILE)
     hd = load_jsonl(HDIC_FILE)
@@ -199,7 +188,12 @@ def delete_person(person_id: str):
     hd2 = [r for r in hd if r.get("person_id") != person_id]
     save_jsonl(NH_FILE, nh2)
     save_jsonl(HDIC_FILE, hd2)
-    return dict(status="deleted", person_id=person_id)
+    
+    # ✅ AUTOMATIC CACHE REBUILD
+    print("[INFO] 🔄 Triggering automatic cache rebuild after deletion...")
+    rebuild_cache_async()
+    
+    return dict(status="deleted", person_id=person_id, cache_status="rebuilding")
 
 @router.get("/config")
 def get_config():
@@ -238,14 +232,12 @@ async def receive_manual_check(
             "person_id": person_id,
             "score": score,
             "timestamp": timestamp,
-            # ✅ Serve via FastAPI static route
             "file_path": f"/uploads/{filename}",
             "status": "pending",
         }
 
         print(f"[INFO] Received manual check alert: {record}")
 
-        # (Optional) Save to your admin DB / JSONL
         db_file = Path(__file__).parent / "manual_checks.jsonl"
         with open(db_file, "a", encoding="utf-8") as db:
             db.write(json.dumps(record) + "\n")
@@ -264,7 +256,7 @@ def list_alerts():
 def update_decision(
     person_id: str = Form(...),
     timestamp: str = Form(...),
-    decision: str = Form(...),  # "confirm" or "reject"
+    decision: str = Form(...),
 ):
     decision = decision.lower().strip()
     if decision not in ("confirm", "reject"):
@@ -287,9 +279,6 @@ def update_decision(
 
 @router.get("/manual_check/status")
 def get_status(person_id: str, timestamp: str):
-    """
-    Field client polls this endpoint to know if admin has reviewed the alert.
-    """
     alerts = load_jsonl(ALERTS_FILE)
     for a in alerts:
         if a["person_id"] == person_id and a["timestamp"] == timestamp:
@@ -298,4 +287,3 @@ def get_status(person_id: str, timestamp: str):
                 "decision_time": a.get("decision_time", None)
             }
     return {"status": "unknown"}
-

@@ -1,50 +1,208 @@
 # fusion/parallel_service.py
 from pathlib import Path
-import tempfile, os, cv2, numpy as np
-import json
-import time  # ✅ ADD: For performance timing
+import cv2, numpy as np
+import time
+import sys
+import atexit
 
-# --- Use your real modules ---
-from preprocess.align import load_and_align          # aligns using MTCNN
-from neuralhash.adapter import compute_hash_bits     # 96-bit NH vector
-from hdic.encode_hv import encode_embedding_to_hv    # returns 10k-D HV directly
-from hdic.feature_extractor import generate_embedding2   # import your 512-D embedder
+# ✅ FIX: Import from absolute path, not relative
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# ---------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parents[1]  # points to repo root
+# Add the db directory to Python path with higher priority
+sys.path.insert(0, str(REPO_ROOT / "db"))
 
-def _load_watchlists_jsonl(repo_root: Path):
-    """Load both NH and HDIC watchlists from db/ folder"""
-    nh_file = repo_root / "db" / "watchlist_neuralhash.jsonl"
-    hdic_file = repo_root / "db" / "watchlist_hdic.jsonl"
-    nh_map, hd_map = {}, {}
+from preprocess.align import load_and_align
+from neuralhash.adapter import compute_hash_bits
+from hdic.encode_hv import encode_embedding_to_hv
+from hdic.feature_extractor import generate_embedding2
 
-    if nh_file.exists():
-        with nh_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip(): continue
-                rec = json.loads(line)
-                pid = rec.get("person_id") or rec.get("id") or rec.get("pid")
-                nh_map[pid] = rec.get("hashes", [])
-
-    if hdic_file.exists():
-        with hdic_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip(): continue
-                rec = json.loads(line)
-                pid = rec.get("person_id") or rec.get("id") or rec.get("pid")
-                hd_map[pid] = list((rec.get("prototypes") or {}).values())
-
-    return nh_map, hd_map
-
+# ✅ NOW import cache manager (will find the correct one)
+from db.cache_manager import ensure_cache_exists, start_cache_watcher, cache_exists
 
 # ---------------------------------------------------------
-# HELPERS
+# CONFIGURATION & SMART CACHE LOADING
 # ---------------------------------------------------------
+CACHE_FILE = REPO_ROOT / "db" / "watchlist_cache.npz"
+
+# Global cache state
+NH_MAP = {}
+HD_MAP = {}
+PERSON_NAMES = {}
+_cache_loaded = False
+_cache_watcher = None
+
+
+def _load_watchlist_cache():
+    """Load pre-built NumPy cache with error handling"""
+    global _cache_loaded
+    
+    if not CACHE_FILE.exists():
+        print(f"[WARN] Cache file not found: {CACHE_FILE}")
+        return {}, {}, {}
+    
+    try:
+        cache = np.load(CACHE_FILE, allow_pickle=False)
+        person_ids = cache.get('person_ids', np.array([])).tolist()
+        person_names = cache.get('person_names', np.array([])).tolist()
+        
+        if len(person_ids) == 0:
+            print("[INFO] Cache loaded but contains 0 persons (empty watchlist)")
+            return {}, {}, {}
+        
+        nh_map = {}
+        hdic_map = {}
+        
+        for i, pid in enumerate(person_ids):
+            try:
+                nh_map[pid] = cache[f'nh_{i}']
+                hdic_map[pid] = cache[f'hdic_{i}']
+            except KeyError as e:
+                print(f"[WARN] Skipping person {pid}: missing data ({e})")
+                continue
+        
+        _cache_loaded = True
+        return nh_map, hdic_map, dict(zip(person_ids, person_names))
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to load cache: {e}")
+        return {}, {}, {}
+
+
+def reload_cache():
+    """
+    Reload cache from disk (called when watchlist changes).
+    This allows the application to pick up new enrollments without restart.
+    """
+    global NH_MAP, HD_MAP, PERSON_NAMES, _cache_loaded
+    
+    print("[INFO] 🔄 Reloading cache...")
+    
+    try:
+        nh_new, hd_new, names_new = _load_watchlist_cache()
+        
+        # Only update if load was successful
+        if nh_new or hd_new:
+            NH_MAP = nh_new
+            HD_MAP = hd_new
+            PERSON_NAMES = names_new
+            print(f"[INFO] ✅ Cache reloaded: {len(NH_MAP)} persons")
+        else:
+            print("[WARN] Cache reload returned empty data")
+            
+    except Exception as e:
+        print(f"[ERROR] Cache reload failed: {e}")
+        print("[INFO] Keeping existing cache in memory")
+
+
+def initialize_cache():
+    """
+    Initialize cache system on module load.
+    This is called automatically when the module is imported.
+    """
+    global NH_MAP, HD_MAP, PERSON_NAMES, _cache_watcher
+    
+    print("\n" + "="*70)
+    print("🚀 INITIALIZING HYBRID FACE RECOGNITION SYSTEM")
+    print("="*70)
+    
+    # Step 1: Ensure cache exists
+    print("[1/3] Checking watchlist cache...")
+    
+    try:
+        cache_ready = ensure_cache_exists()
+        if not cache_ready:
+            print("[WARN] Cache initialization had issues")
+    except Exception as e:
+        print(f"[ERROR] Cache check failed: {e}")
+        print("[INFO] Attempting to create empty cache...")
+        
+        # Create minimal empty cache as fallback
+        try:
+            from db.build_cache import build_cache
+            build_cache(silent=False)
+        except Exception as build_error:
+            print(f"[ERROR] Could not build cache: {build_error}")
+            print("[WARN] Application will start with empty watchlist")
+    
+    # Step 2: Load cache into memory
+    print("\n[2/3] Loading watchlist into memory...")
+    cache_start = time.time()
+    
+    try:
+        NH_MAP, HD_MAP, PERSON_NAMES = _load_watchlist_cache()
+        cache_time = time.time() - cache_start
+        
+        if len(NH_MAP) > 0:
+            print(f"[INFO] ✅ Loaded {len(NH_MAP)} persons in {cache_time*1000:.1f}ms")
+            
+            # Show cache file info
+            if CACHE_FILE.exists():
+                cache_size_kb = CACHE_FILE.stat().st_size / 1024
+                cache_age_sec = time.time() - CACHE_FILE.stat().st_mtime
+                print(f"[INFO] Cache size: {cache_size_kb:.1f} KB")
+                print(f"[INFO] Cache age: {cache_age_sec/60:.1f} minutes")
+        else:
+            print("[INFO] ⚠️  Watchlist is empty (no persons enrolled)")
+            print("[INFO] Application ready but will return NO_MATCH until enrollment")
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to load cache: {e}")
+        print("[WARN] Starting with empty watchlist")
+        NH_MAP, HD_MAP, PERSON_NAMES = {}, {}, {}
+    
+    # Step 3: Start automatic cache watcher
+    print("\n[3/3] Starting automatic cache watcher...")
+    
+    try:
+        _cache_watcher = start_cache_watcher(check_interval=30)
+        print("[INFO] ✅ Cache watcher active (checks every 30s)")
+        
+        # Register shutdown handler
+        def _shutdown():
+            if _cache_watcher:
+                print("\n[INFO] Stopping cache watcher...")
+                _cache_watcher.stop()
+        
+        atexit.register(_shutdown)
+        
+    except Exception as e:
+        print(f"[WARN] Cache watcher failed to start: {e}")
+        print("[INFO] Cache won't auto-reload (manual restart needed for updates)")
+    
+    print("\n" + "="*70)
+    print(f"✅ SYSTEM READY | {len(NH_MAP)} persons loaded")
+    print("="*70 + "\n")
+
+
+# ✅ AUTOMATIC INITIALIZATION
+# This runs when the module is imported
+initialize_cache()
+
+
+# ---------------------------------------------------------
+# OPTIMIZED DISTANCE FUNCTIONS
+# ---------------------------------------------------------
+
+def _nh_min_distance_vectorized(probe_bits: np.ndarray, hashes_matrix: np.ndarray) -> int:
+    """Vectorized Hamming distance for NeuralHash"""
+    if hashes_matrix.size == 0:
+        return 96
+    distances = np.sum(hashes_matrix != probe_bits, axis=1)
+    return int(np.min(distances))
+
+
+def _hdic_min_distance_vectorized(probe_hv: np.ndarray, prototypes_matrix: np.ndarray) -> float:
+    """Vectorized Hamming distance for HDIC"""
+    if prototypes_matrix.size == 0:
+        return 1e9
+    distances = np.sum(prototypes_matrix != probe_hv, axis=1)
+    return float(np.min(distances))
+
+
 def _align_from_frame(frame_bgr: np.ndarray) -> np.ndarray | None:
-    """Your aligner expects a file path, so we write temp JPEG."""
+    """Direct alignment from BGR frame"""
+    import tempfile, os
+    
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp_path = tmp.name
         cv2.imwrite(tmp_path, frame_bgr)
@@ -56,43 +214,10 @@ def _align_from_frame(frame_bgr: np.ndarray) -> np.ndarray | None:
         except: pass
 
 
-def _hamming_distance(a: np.ndarray, b: np.ndarray) -> int:
-    return int(np.sum(a != b))
-
-
-def _nh_min_distance(probe_bits: np.ndarray, hashes_list: list[list[int]]) -> int:
-    """Minimum Hamming distance across a person's stored NH hashes."""
-    if not hashes_list:
-        return 96
-    pb = probe_bits.astype(np.uint8).reshape(-1)
-    dmin = 96
-    for h in hashes_list:
-        ha = np.array(h, dtype=np.uint8).reshape(-1)
-        d = _hamming_distance(pb, ha)
-        if d < dmin:
-            dmin = d
-    return dmin
-
-
-def _hdic_min_distance(probe_hv: np.ndarray, prototypes: list[list[int]]) -> float:
-    """Minimum Hamming distance across HDIC prototypes (for 0/1 binary HVs)."""
-    if not prototypes:
-        return 1e9
-    p = probe_hv.astype(np.uint8).reshape(-1)
-    dmin = 1e9
-    for proto in prototypes:
-        q = np.array(proto, dtype=np.uint8).reshape(-1)
-        # --- Real Hamming distance (count differing bits) ---
-        d = int(np.sum(p != q))
-        if d < dmin:
-            dmin = d
-    return float(dmin)
-
-
-
 # ---------------------------------------------------------
 # MAIN MATCH FUNCTION
 # ---------------------------------------------------------
+
 def match_frame(
     frame_bgr: np.ndarray,
     Tnh: float = 30,
@@ -102,16 +227,25 @@ def match_frame(
     fused_th: float = 0.70,
 ):
     """
-    Full parallel NH + HDIC pipeline for a webcam frame.
-    Reuses your original logic from match_parallel.py.
-    ✅ NOW WITH DETAILED DISTANCE LOGGING
+    ✅ FULLY AUTOMATIC: Uses cached data that auto-updates
+    ✅ PRODUCTION SAFE: Handles empty watchlist gracefully
     """
     
-    # ✅ START TIMING
     start_time = time.time()
     print("\n" + "="*80)
     print(f"🔍 STARTING FACE RECOGNITION MATCH")
     print("="*80)
+
+    # ✅ Check if watchlist is loaded
+    if len(NH_MAP) == 0 or len(HD_MAP) == 0:
+        print("⚠️  WARNING: Watchlist is empty (no persons enrolled)")
+        print("="*80 + "\n")
+        return {
+            "decision": "NO_WATCHLIST",
+            "person_id": None,
+            "scores": {},
+            "message": "No persons enrolled in watchlist"
+        }
 
     # 1️⃣ Face alignment
     align_start = time.time()
@@ -120,94 +254,48 @@ def match_frame(
     
     if face_rgb is None:
         print("❌ NO FACE DETECTED")
-        print(f"⏱️  Alignment time: {align_time*1000:.1f}ms")
+        print(f"⏱️  Alignment: {align_time*1000:.1f}ms")
         print("="*80 + "\n")
         return {"decision": "NO_FACE", "person_id": None, "scores": {}}
     
-    print(f"✅ Face aligned successfully: {face_rgb.shape}")
-    print(f"⏱️  Alignment time: {align_time*1000:.1f}ms")
+    print(f"✅ Face aligned: {face_rgb.shape} | {align_time*1000:.1f}ms")
 
-    # 2️⃣ Feature extraction (real modules)
+    # 2️⃣ Feature extraction
     try:
         feature_start = time.time()
         
-        print("\n📊 EXTRACTING FEATURES...")
-        nh_start = time.time()
         probe_nh = compute_hash_bits(face_rgb)
-        nh_time = time.time() - nh_start
-        print(f"  ✓ NeuralHash computed: 96 bits | Time: {nh_time*1000:.1f}ms")
-
-        emb_start = time.time()
-        embedding = generate_embedding2(face_rgb)  # 512-D FaceNet features
-        emb_time = time.time() - emb_start
-        print(f"  ✓ FaceNet embedding: {embedding.shape} | Time: {emb_time*1000:.1f}ms")
-
-        hdic_start = time.time()
-        probe_hv = encode_embedding_to_hv(embedding).astype(np.float32)  # 10k-D HDIC HV
-        hdic_time = time.time() - hdic_start
-        print(f"  ✓ HDIC hypervector: {probe_hv.shape} | Time: {hdic_time*1000:.1f}ms")
+        embedding = generate_embedding2(face_rgb)
+        probe_hv = encode_embedding_to_hv(embedding).astype(np.float32)
         
         feature_time = time.time() - feature_start
-        print(f"⏱️  Total feature extraction: {feature_time*1000:.1f}ms")
+        print(f"✅ Features extracted | {feature_time*1000:.1f}ms")
 
     except Exception as e:
-        print(f"\n❌ ERROR during feature extraction: {e}")
+        print(f"\n❌ ERROR: {e}")
         print("="*80 + "\n")
-        return {
-            "decision": "ERROR",
-            "error": f"Encoding failed: {e}",
-            "person_id": None,
-            "scores": {},
-        }
+        return {"decision": "ERROR", "error": str(e), "person_id": None, "scores": {}}
 
-    # 3️⃣ Load both watchlists
-    watchlist_start = time.time()
-    nh_map, hd_map = _load_watchlists_jsonl(REPO_ROOT)
-    person_ids = sorted(set(nh_map.keys()) & set(hd_map.keys()))
-    watchlist_time = time.time() - watchlist_start
-    
-    if not person_ids:
-        print("\n❌ ERROR: Empty watchlist")
-        print("="*80 + "\n")
-        return {"decision": "ERROR", "error": "Empty watchlist", "person_id": None, "scores": {}}
-    
-    print(f"\n📋 Loaded {len(person_ids)} persons from watchlist | Time: {watchlist_time*1000:.1f}ms")
+    # 3️⃣ Use cached watchlist
+    person_ids = list(NH_MAP.keys())
+    print(f"📋 Matching against {len(person_ids)} persons")
 
-    # 4️⃣ Score each person
-    print("\n" + "-"*80)
-    print("🎯 COMPUTING DISTANCES FOR ALL PERSONS")
-    print("-"*80)
-    print(f"{'Person ID':<15} {'NH Dist':<10} {'HDIC Dist':<12} {'S_NH':<8} {'S_HDIC':<10} {'S_final':<10} {'Status':<15}")
+    # 4️⃣ Vectorized scoring
     print("-"*80)
     
     matching_start = time.time()
     best_pid, best_sfinal, best_metrics = None, -1.0, None
-    all_scores = []
     
     for pid in person_ids:
-        d_nh = _nh_min_distance(probe_nh, nh_map.get(pid, []))
-        d_hdic = _hdic_min_distance(probe_hv, hd_map.get(pid, []))
+        d_nh = _nh_min_distance_vectorized(probe_nh, NH_MAP[pid])
+        d_hdic = _hdic_min_distance_vectorized(probe_hv, HD_MAP[pid])
+        
         Snh = 1.0 - (d_nh / 96.0)
-        Shdic_norm = 1.0 - (d_hdic / 10000.0)  # normalization for fusion
+        Shdic_norm = 1.0 - (d_hdic / 10000.0)
         Sfinal = (w_nh * Snh) + (w_hdic * Shdic_norm)
         
-        # ✅ Determine pass/fail for each gate
-        nh_pass = "✓" if d_nh < Tnh else "✗"
-        hdic_pass = "✓" if d_hdic < Thdic else "✗"
-        fused_pass = "✓" if Sfinal >= fused_th else "✗"
-        status = f"NH{nh_pass} HD{hdic_pass} F{fused_pass}"
-        
-        # ✅ Print each person's scores
-        print(f"{pid:<15} {d_nh:<10} {d_hdic:<12.0f} {Snh:<8.3f} {Shdic_norm:<10.3f} {Sfinal:<10.3f} {status:<15}")
-        
-        all_scores.append({
-            "person_id": pid,
-            "d_nh": d_nh,
-            "d_hdic": d_hdic,
-            "Snh": Snh,
-            "Shdic_norm": Shdic_norm,
-            "Sfinal": Sfinal
-        })
+        name = PERSON_NAMES.get(pid, pid)[:18]
+        print(f"{name:<20} NH:{d_nh:<3} HDIC:{d_hdic:<5.0f} Final:{Sfinal:.3f}")
 
         if Sfinal > best_sfinal:
             best_sfinal = Sfinal
@@ -217,50 +305,33 @@ def match_frame(
                 "d_hdic": d_hdic,
                 "Snh": Snh,
                 "Shdic_norm": Shdic_norm,
-                "Sfinal": Sfinal,
+                "Sfinal": Sfinal
             }
+            
+            # Early exit
+            if (d_nh < Tnh and d_hdic < Thdic and Sfinal >= 0.95):
+                print(f"⚡ Early exit: High confidence!")
+                break
 
     matching_time = time.time() - matching_start
-    print("-"*80)
-    print(f"⏱️  Matching time: {matching_time*1000:.1f}ms")
+    print(f"-"*80)
+    print(f"⏱️  Matching: {matching_time*1000:.1f}ms")
 
     if best_pid is None:
-        print("\n❌ NO MATCH FOUND")
-        print("="*80 + "\n")
+        print("\n❌ NO MATCH\n" + "="*80 + "\n")
         return {"decision": "NO_MATCH", "person_id": None, "scores": {}}
 
-    # 5️⃣ Apply your original triple-gate rule
+    # 5️⃣ Final decision
     is_match = (
-        (best_metrics["d_nh"] < Tnh)
-        and (best_metrics["d_hdic"] < Thdic)
-        and (best_metrics["Sfinal"] >= fused_th)
+        best_metrics["d_nh"] < Tnh 
+        and best_metrics["d_hdic"] < Thdic 
+        and best_metrics["Sfinal"] >= fused_th
     )
     decision = "MATCH" if is_match else "NO_MATCH"
     
-    # ✅ FINAL RESULTS
-    print("\n" + "="*80)
-    print("🏆 BEST MATCH RESULTS")
-    print("="*80)
-    print(f"Person ID:         {best_pid}")
-    print(f"Decision:          {decision}")
-    print(f"\n📏 Distances:")
-    print(f"  NH Distance:     {best_metrics['d_nh']} / 96  (threshold: {Tnh})")
-    print(f"  HDIC Distance:   {best_metrics['d_hdic']:.0f} / 10000  (threshold: {Thdic})")
-    print(f"\n📊 Similarity Scores:")
-    print(f"  S_NH:            {best_metrics['Snh']:.4f}")
-    print(f"  S_HDIC:          {best_metrics['Shdic_norm']:.4f}")
-    print(f"  S_final:         {best_metrics['Sfinal']:.4f}  (threshold: {fused_th})")
-    print(f"\n✅ Gate Status:")
-    print(f"  NH Gate:         {'PASS ✓' if best_metrics['d_nh'] < Tnh else 'FAIL ✗'}")
-    print(f"  HDIC Gate:       {'PASS ✓' if best_metrics['d_hdic'] < Thdic else 'FAIL ✗'}")
-    print(f"  Fused Gate:      {'PASS ✓' if best_metrics['Sfinal'] >= fused_th else 'FAIL ✗'}")
-    
     total_time = time.time() - start_time
-    print(f"\n⏱️  TOTAL TIME: {total_time*1000:.1f}ms")
-    print("  ├─ Alignment:    {:.1f}ms ({:.1f}%)".format(align_time*1000, align_time/total_time*100))
-    print("  ├─ Features:     {:.1f}ms ({:.1f}%)".format(feature_time*1000, feature_time/total_time*100))
-    print("  ├─ Watchlist:    {:.1f}ms ({:.1f}%)".format(watchlist_time*1000, watchlist_time/total_time*100))
-    print("  └─ Matching:     {:.1f}ms ({:.1f}%)".format(matching_time*1000, matching_time/total_time*100))
+    print(f"\n🏆 {decision}: {PERSON_NAMES.get(best_pid, best_pid)}")
+    print(f"⏱️  TOTAL: {total_time*1000:.1f}ms")
     print("="*80 + "\n")
 
     return {"decision": decision, "person_id": best_pid, "scores": best_metrics}
