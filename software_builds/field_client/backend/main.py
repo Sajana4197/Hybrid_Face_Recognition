@@ -10,6 +10,7 @@ from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.staticfiles import StaticFiles
 from io import BytesIO
+from math import ceil
 from software_builds.field_client.backend.verifications import router as ver_router, enqueue_case
 
 # ---- Internal project imports ----
@@ -92,15 +93,29 @@ def get_config():
 @app.post("/config")
 def update_config(payload: dict):
     global Tnh, Thdic, w_nh, w_hdic, T_final, ADMIN_API
-    for k in ["Tnh","Thdic","w_nh","w_hdic","T_final","admin_api"]:
-        if k in payload:
-            val = payload[k]
-            if k in ("w_nh","w_hdic") and not (0.0 <= float(val) <= 1.0):
-                continue
-            if k == "admin_api":
-                ADMIN_API = str(val)
-            else:
-                locals()[k] = float(val)
+    # Safely parse floats and update globals
+    if "Tnh" in payload:
+        try: Tnh = float(payload["Tnh"])
+        except: pass
+    if "Thdic" in payload:
+        try: Thdic = float(payload["Thdic"])
+        except: pass
+    if "w_nh" in payload:
+        try:
+            v = float(payload["w_nh"])
+            if 0.0 <= v <= 1.0: w_nh = v
+        except: pass
+    if "w_hdic" in payload:
+        try:
+            v = float(payload["w_hdic"])
+            if 0.0 <= v <= 1.0: w_hdic = v
+        except: pass
+    if "T_final" in payload:
+        try: T_final = float(payload["T_final"])
+        except: pass
+    if "admin_api" in payload:
+        ADMIN_API = str(payload["admin_api"])
+
     cfg = {
         "Tnh": Tnh, "Thdic": Thdic, "w_nh": w_nh, "w_hdic": w_hdic,
         "T_final": T_final, "port": PORT,
@@ -145,7 +160,6 @@ async def match_multi(files: List[UploadFile] = File(...)):
             img_array = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             if frame is None:
-                print(f"[WARN] Could not decode frame {filename}")
                 return None
 
             result = match_frame(
@@ -155,29 +169,40 @@ async def match_multi(files: List[UploadFile] = File(...)):
                 fused_th=T_final,
             )
 
-            Sfinal = result.get("scores", {}).get("Sfinal", 0)
-            d_nh = result.get("scores", {}).get("d_nh", None)
-            d_hdic = result.get("scores", {}).get("d_hdic", None)
-            decision = result.get("decision", "UNKNOWN")
-            pid = result.get("person_id", None)
+            scores = result.get("scores", {}) or {}
+            Sfinal = scores.get("Sfinal")
+            d_nh = scores.get("d_nh")
+            d_hdic = scores.get("d_hdic")
+            pid = result.get("person_id")
 
-            print(f"[INFO] Frame {idx+1}: Decision={decision}, Sfinal={Sfinal:.3f}")
+            ok = (
+                d_nh is not None and d_hdic is not None and Sfinal is not None and
+                d_nh < Tnh and d_hdic < Thdic and Sfinal >= T_final
+            )
+            # One short line per frame
+            try:
+                if d_nh is not None and d_hdic is not None and Sfinal is not None:
+                    print(f"Frame {idx+1}: d_nh={int(d_nh)}, d_hdic={int(d_hdic)}, Sfinal={float(Sfinal):.3f} -> {'MATCH' if ok else 'NO_MATCH'}")
+                else:
+                    print(f"Frame {idx+1}: NO_FACE or ERROR")
+            except:
+                pass
 
             return {
                 "index": idx + 1,
                 "filename": filename,
-                "decision": decision,
+                "ok": ok,                        # <- authoritative for majority
+                "decision": "MATCH" if ok else "NO_MATCH",
                 "Sfinal": float(Sfinal) if Sfinal is not None else None,
-                "d_nh": d_nh,
-                "d_hdic": d_hdic,
+                "d_nh": int(d_nh) if d_nh is not None else None,
+                "d_hdic": int(d_hdic) if d_hdic is not None else None,
                 "person_id": pid,
             }
 
-        except Exception as e:
-            print(f"[WARN] Failed to process frame {idx+1}: {e}")
+        except Exception:
             return None
 
-    # Run all frames in parallel
+    # Process frames in parallel
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = list(filter(None, ex.map(lambda args: process_single(*args), frames_data)))
 
@@ -185,8 +210,9 @@ async def match_multi(files: List[UploadFile] = File(...)):
         return {"decision": "NO_FACE", "frames": 0}
 
     total = len(results)
-    match_count = sum(1 for r in results if r["decision"] == "MATCH")
-    majority_decision = "MATCH" if match_count >= 3 else "NO_MATCH"
+    match_count = sum(1 for r in results if r.get("ok"))
+    needed = ceil(total / 2)  # majority, for 5 → 3
+    majority_decision = "MATCH" if match_count >= needed else "NO_MATCH"
 
     best_frame = max(results, key=lambda x: x.get("Sfinal", 0) or 0.0)
     best_score = best_frame.get("Sfinal", 0.0)
@@ -196,37 +222,33 @@ async def match_multi(files: List[UploadFile] = File(...)):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     final_result = {
-        "method": "majority-of-N",
+        "method": f"majority-of-{total}",
         "frames": total,
         "match_frames": match_count,
         "match_ratio": round(match_count / total, 2),
         "decision": majority_decision,
         "best_score": round(best_score, 3),
-        "best_person_id": best_pid,
+        "best_person_id": best_pid if match_count >= needed else None,
         "frame_details": results,
         "timestamp": timestamp,
     }
 
     log_match(final_result)
 
-    # ---- Handle a MATCH (send to Admin + store locally) ----
     if majority_decision == "MATCH" and best_pid:
         try:
             _, best_bytes, _ = frames_data[best_idx]
-            enqueue_case(best_pid, best_score, best_bytes)  # Store locally
-
-            # Send to Admin for manual confirmation
+            enqueue_case(best_pid, best_score, best_bytes)
             send_manual_alert(
                 person_id=best_pid,
                 score=best_score,
                 image_bytes=best_bytes,
                 timestamp=timestamp,
             )
-        except Exception as e:
-            print("[WARN] Failed to prepare best frame for alert or enqueue:", e)
+        except Exception:
+            pass
 
     return final_result
-
 
 
 # ✅ NEW: Admin feedback check endpoint

@@ -56,59 +56,50 @@ def load_and_align(image_path, output_size=(160, 160), normalize=False):
     return face
 
 
-# ✅ NEW FUNCTION: Accept NumPy array directly
+# NEW: Alignment directly from BGR numpy array (no file I/O)
 def align_from_array(img_bgr: np.ndarray, output_size=(160, 160), normalize=False):
     """
-    Detect & align the largest face from a BGR numpy array (no file I/O).
-    
-    Args:
-        img_bgr: BGR image as numpy array (H, W, 3)
-        output_size: Target face size (default 160x160)
-        normalize: Whether to normalize to [0,1] float32
-        
-    Returns:
-        RGB face crop as uint8 or float32, or None if no face detected
+    Detect & crop face from a BGR numpy array using MTCNN.
+    Returns RGB face crop or None.
     """
     if img_bgr is None or img_bgr.size == 0:
-        print("[WARN] Empty input image")
         return None
 
-    # Convert BGR to RGB
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    # Optional downscale for faster detection (keeps enough detail)
+    h0, w0 = img_bgr.shape[:2]
+    scale = 640.0 / max(h0, w0) if max(h0, w0) > 640 else 1.0
+    if scale < 1.0:
+        img_small = cv2.resize(img_bgr, (int(w0 * scale), int(h0 * scale)))
+    else:
+        img_small = img_bgr
 
-    # Detect faces
-    boxes, probs = mtcnn.detect(img_rgb)
+    img_rgb_small = cv2.cvtColor(img_small, cv2.COLOR_BGR2RGB)
+    boxes, probs = mtcnn.detect(img_rgb_small)
     if boxes is None or len(boxes) == 0:
-        print("[WARN] No face detected in frame")
         return None
 
     # Use largest detected face
     box = boxes[0].astype(int)
     x1, y1, x2, y2 = box
 
-    # Clip coordinates to image boundaries
-    h, w, _ = img_rgb.shape
-    x1 = max(0, min(x1, w - 1))
-    x2 = max(0, min(x2, w))
-    y1 = max(0, min(y1, h - 1))
-    y2 = max(0, min(y2, h))
+    # Map back to original coordinates if scaled
+    if scale < 1.0:
+        inv = 1.0 / scale
+        x1, y1, x2, y2 = int(x1 * inv), int(y1 * inv), int(x2 * inv), int(y2 * inv)
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    H, W = img_rgb.shape[:2]
+    x1 = max(0, min(x1, W - 1))
+    x2 = max(0, min(x2, W))
+    y1 = max(0, min(y1, H - 1))
+    y2 = max(0, min(y2, H))
 
     if x2 <= x1 or y2 <= y1:
-        print(f"[WARN] Invalid face crop, box={box}")
         return None
 
-    # Crop face
     face = img_rgb[y1:y2, x1:x2]
     if face.size == 0:
-        print(f"[WARN] Empty face crop, box={box}")
         return None
 
-    # Resize to target size
     face = cv2.resize(face, output_size)
-
-    if normalize:
-        face = face.astype(np.float32) / 255.0
-    else:
-        face = face.astype(np.uint8)
-
-    return face
+    return face.astype(np.float32) / 255.0 if normalize else face.astype(np.uint8)
