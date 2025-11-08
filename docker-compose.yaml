@@ -13,10 +13,7 @@ services:
     restart: unless-stopped
 
   admin_api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: hybrid-face-recognition:latest
+    image: hybrid-face-recognition:latest  # reuse built image; no build here
     container_name: admin_api
     env_file:
       - .env

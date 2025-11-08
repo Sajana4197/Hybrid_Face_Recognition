@@ -3,8 +3,8 @@ numpy
 scikit-learn
 scipy
 
-torch
-torchvision
+#torch
+#torchvision
 tensorflow
 pandas
 facenet-pytorch      # ArcFace / InceptionResnetV1 + MTCNN
@@ -40,3 +40,8 @@ matplotlib           # debugging / visualization
 fastapi 
 uvicorn 
 python-multipart
+
+#newly added
+psycopg[binary]
+SQLAlchemy>=2.0
+python-dotenv
