@@ -1,0 +1,8 @@
+node_modules/
+build/
+dist/
+.cache/
+.git/
+Dockerfile.*
+npm-debug.log*
+yarn-error.log*

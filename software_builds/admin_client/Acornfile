@@ -1,0 +1,29 @@
+acorn: v1
+
+args: {
+  ADMIN_PORT?: string | "5002"
+  UI_PORT?: string | "8082"
+  # URL the browser (Admin UI) calls to reach the Admin backend
+  API_BASE_URL?: string | "http://localhost:5002"
+}
+
+containers: {
+  admin-backend: {
+    build: {
+      context: "../.."
+      dockerfile: "software_builds/admin_client/backend/Dockerfile"
+    }
+    ports: ["\(\(args.ADMIN_PORT\)\):5002/tcp"]
+  }
+
+  admin-ui: {
+    build: {
+      context: "./ui/admin_ui"
+      dockerfile: "Dockerfile"
+    }
+    ports: ["\(\(args.UI_PORT\)\):80/tcp"]
+    env: {
+      API_BASE_URL: args.API_BASE_URL
+    }
+  }
+}
