@@ -1,32 +1,25 @@
-# Start by excluding everything
+# Exclude everything by default
 *
-
-# Re-include only what's needed for the build
 !.dockerignore
 !Dockerfile
+!docker-compose.yaml
 !requirements.txt
 
-# App code actually imported at runtime
+# Include only the Python code needed by the services
 !software_builds/field_client/backend/**
 !software_builds/admin_client/backend/**
-
-# Core modules used by the backend imports
 !fusion/**
 !preprocess/**
 !neuralhash/**
 !hdic/**
 
-# Keep essential small config files if they live elsewhere
-!**/config.yaml
-!**/*.py
-
-# Still exclude heavy artifacts even inside included dirs
+# Python build artifacts
 **/__pycache__/
 **/*.pyc
 **/*.pyo
 **/*.pyd
 
-# Very large files to exclude everywhere
+# Large/irrelevant artifacts (keep these excluded everywhere)
 **/*.pt
 **/*.pth
 **/*.h5
