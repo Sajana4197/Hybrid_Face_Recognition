@@ -1,0 +1,58 @@
+version: "3.9"
+
+name: hybrid-face-recognition
+
+networks:
+  hfr-net: {}
+
+services:
+  # --- Backends ---
+  field-backend:
+    build:
+      context: ..
+      dockerfile: software_builds/field_client/backend/Dockerfile
+    image: ${REGISTRY:-local}/hfr-field-backend:${IMAGE_TAG:-dev}
+    container_name: hfr-field-backend
+    environment:
+      # Field -> Admin notification URL (inside compose network)
+      ADMIN_BASE_URL: http://hfr-admin-backend:5002
+    ports:
+      - "5001:5001"
+    networks: [hfr-net]
+
+  admin-backend:
+    build:
+      context: ..
+      dockerfile: software_builds/admin_client/backend/Dockerfile
+    image: ${REGISTRY:-local}/hfr-admin-backend:${IMAGE_TAG:-dev}
+    container_name: hfr-admin-backend
+    ports:
+      - "5002:5002"
+    networks: [hfr-net]
+
+  # --- Frontends served by Nginx ---
+  field-ui:
+    build:
+      context: ./field_client/ui
+    image: ${REGISTRY:-local}/hfr-field-ui:${IMAGE_TAG:-dev}
+    container_name: hfr-field-ui
+    environment:
+      # Browser calls host-published Field backend
+      API_BASE_URL: ${FIELD_API_BASE_URL:-http://localhost:5001}
+    depends_on: [field-backend]
+    ports:
+      - "8081:80"  # Field UI at http://localhost:8081
+    networks: [hfr-net]
+
+  admin-ui:
+    build:
+      context: ./admin_client/ui/admin_ui
+    image: ${REGISTRY:-local}/hfr-admin-ui:${IMAGE_TAG:-dev}
+    container_name: hfr-admin-ui
+    environment:
+      # Browser calls host-published Admin backend
+      API_BASE_URL: ${ADMIN_API_BASE_URL:-http://localhost:5002}
+    depends_on: [admin-backend]
+    ports:
+      - "8082:80"  # Admin UI at http://localhost:8082
+    networks: [hfr-net]

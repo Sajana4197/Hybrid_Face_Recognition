@@ -1,0 +1,36 @@
+acorn: v1
+
+# Arguments to allow overriding ports and API URLs at deploy time
+args: {
+  FIELD_PORT?: string | "5001"
+  UI_PORT?: string | "8081"
+  # URL that the Field backend uses to notify the Admin backend (external/public URL or internal if in same environment)
+  ADMIN_BASE_URL?: string | ""
+  # URL the browser (Field UI) calls to reach the Field backend
+  API_BASE_URL?: string | "http://localhost:5001"
+}
+
+containers: {
+  field-backend: {
+    build: {
+      context: "../.."
+      dockerfile: "software_builds/field_client/backend/Dockerfile"
+    }
+    # Publish backend port
+    ports: ["\(\(args.FIELD_PORT\)\):5001/tcp"]
+    env: {
+      ADMIN_BASE_URL: args.ADMIN_BASE_URL
+    }
+  }
+
+  field-ui: {
+    build: {
+      context: "./ui"
+      dockerfile: "Dockerfile"
+    }
+    ports: ["\(\(args.UI_PORT\)\):80/tcp"]
+    env: {
+      API_BASE_URL: args.API_BASE_URL
+    }
+  }
+}
