@@ -85,7 +85,7 @@ python -m cli.enroll --id n000002 --name "John Doe" --images "dataset/n000002"
 To enroll all persons at once from `dataset/enroll/`:
 
 ```bash
-python -m cli.bulk_enroll --root dataset/enroll --clusters 3
+python .\tools\bulk_enroll.py --root dataset/enroll
 ```
 
 ### 2. Matching
