@@ -49,7 +49,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="Root folder of original dataset (contains person folders)")
     ap.add_argument("--dst", required=True, help="Output root (will create enroll/ and test/)")
-    ap.add_argument("--frac", type=float, default=0.7, help="Enroll fraction per identity (default 0.7)")
+    ap.add_argument("--frac", type=float, default=0.6, help="Enroll fraction per identity (default 0.7)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--min_enroll", type=int, default=30)
     ap.add_argument("--min_test", type=int, default=10)
