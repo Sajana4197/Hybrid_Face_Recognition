@@ -1,0 +1,33 @@
+{
+  "type": "module",
+  "name": "hybrid-field-client",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "concurrently \"npm:serve-react\" \"npm:serve-electron\"",
+    "serve-react": "vite",
+    "build-react": "vite build",
+    "serve-electron": "wait-on http://localhost:5173 && electron .",
+    "electron:prod": "electron .",
+    "build": "npm run build-react"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.0.1",
+    "electron": "^31.3.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.0",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.545.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

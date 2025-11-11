@@ -38,10 +38,10 @@ data/
 images/
 software_builds/admin_client/backend/uploads/
 manual_checks.jsonl
-software_builds/field_client/backend/verifications/decided/
-software_builds/field_client/backend/verifications/pending/
-software_builds/field_client/backend/verifications/verifications.jsonl
-
+software_builds111/field_client/backend/verifications/decided/
+software_builds111/field_client/backend/verifications/pending/
+software_builds111/field_client/backend/verifications/verifications.jsonl
+software_builds111/admin_client/backend/uploads/
 # Embeddings / Hypervectors
 embeddings/
 hypervectors/

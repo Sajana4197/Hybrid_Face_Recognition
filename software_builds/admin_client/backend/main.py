@@ -1,52 +1,32 @@
+# software_builds/admin_client/backend/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-import os, sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-from admin_api import router as admin_router
 
-# ============================================================
-# Main FastAPI App
-# ============================================================
-app = FastAPI(title="Admin Manual Verification API")
+# Allow running as a package ("backend.main") or a script ("python main.py")
+try:
+    from .admin_api import router as admin_router, UPLOADS_DIR
+except ImportError:
+    from admin_api import router as admin_router, UPLOADS_DIR  # type: ignore
 
-# CORS setup for UI (React dev server)
+app = FastAPI(title="Admin API", version="1.0")
+
+# CORS: wide-open for dev; lock down in prod if needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================
-# Include routers
-# ============================================================
-app.include_router(admin_router, prefix="")
+# Static mount for uploaded verification images
+Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
-# ============================================================
-# ✅ Serve uploaded images statically
-# ============================================================
-UPLOAD_DIR = Path(__file__).parent / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# API routes
+app.include_router(admin_router)
 
-# ============================================================
-# Health check
-# ============================================================
 @app.get("/health")
 def health():
-    return {"status": "ok"}
-
-# ============================================================
-# Entry point
-# ============================================================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=5002, reload=True)
+    return {"ok": True}
