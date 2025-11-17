@@ -169,3 +169,17 @@ def match_frame(
     decision = "MATCH" if is_match else "NO_MATCH"
 
     return {"decision": decision, "person_id": best_pid, "scores": best_metrics}
+
+
+def get_nh_and_hdic_with_uncertainty(face_rgb, pca, hyperplanes, num_samples=50):
+    # baseline embedding / hashes
+    base_emb = get_embedding(face_rgb)
+    base_hv  = encode_embedding_to_hv(base_emb)
+    base_nh  = compute_hash(pca.transform([base_emb])[0], hyperplanes)
+
+    # enable MC-Dropout on resnet ...
+    # collect multiple embeddings, compute NH & HV each time,
+    # track Hamming distances to baseline,
+    # compute std / var for NH and HV separately.
+    ...
+    return base_nh, base_hv, nh_std, hv_std

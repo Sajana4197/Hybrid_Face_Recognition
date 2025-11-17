@@ -41,6 +41,8 @@ manual_checks.jsonl
 software_builds/field_client/backend/verifications/decided/
 software_builds/field_client/backend/verifications/pending/
 software_builds/field_client/backend/verifications/verifications.jsonl
+supportive/dataset_test_hq
+supportive/dataset_test_ijbb
 
 # Embeddings / Hypervectors
 embeddings/

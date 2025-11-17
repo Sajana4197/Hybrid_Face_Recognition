@@ -109,7 +109,7 @@ if __name__ == "__main__":
     
     # --- ⚠️ CHANGE THIS PATH ---
     # This should be the folder containing all your test images
-    TEST_FOLDER_PATH = r"D:\FYP\Madusha_ArcFace_Evaluation\Arcface-Verification-System_Evaluation\datasets\test"
+    TEST_FOLDER_PATH = r"D:\FYP\Hybrid_Face_Recognition\supportive\dataset_test_ijbb"
     # ----------------------------
 
     # Find all images in the folder and its subfolders

@@ -2,7 +2,7 @@ import os
 import shutil
 
 base_dir = r"C:\Users\ASUS\Desktop\nFilterd"
-output_dir = r"D:\FYP\Hybrid_Face_Recognition\supportive\dataset_test_hq"
+output_dir = r"D:\FYP\Hybrid_Face_Recognition\supportive\dataset_test_ijbb"
 
 # Create output directory if not exists
 os.makedirs(output_dir, exist_ok=True)
