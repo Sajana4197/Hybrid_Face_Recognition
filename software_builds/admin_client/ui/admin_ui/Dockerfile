@@ -1,5 +1,5 @@
 # Admin Client UI (React + Tailwind) served by Nginx
-ARG NODE_VERSION=18
+ARG NODE_VERSION=22
 
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
