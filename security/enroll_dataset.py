@@ -1,9 +1,9 @@
+# enroll_dataset.py
+
 import os
-import sys
 import argparse
 import glob
 from typing import List, Tuple
-import uuid
 
 import numpy as np
 

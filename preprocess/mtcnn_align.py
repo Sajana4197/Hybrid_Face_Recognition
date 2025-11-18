@@ -1,4 +1,4 @@
-# MTCNN_preprocess_gpu.py
+# mtcnn_align.py
 
 import os
 import cv2

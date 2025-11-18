@@ -1,3 +1,5 @@
+# adapter.py
+
 import os
 import numpy as np
 from .neuralhash_core import (

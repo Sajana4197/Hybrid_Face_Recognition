@@ -1,3 +1,5 @@
+# cluster_enroll.py
+
 import base64, numpy as np
 from sklearn.cluster import KMeans
 from common.hamming import bundle_majority

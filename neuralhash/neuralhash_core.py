@@ -1,3 +1,5 @@
+# neuralhash_core.py
+
 import os
 import pickle
 import numpy as np

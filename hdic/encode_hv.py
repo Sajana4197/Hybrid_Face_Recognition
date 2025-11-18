@@ -1,4 +1,4 @@
-#hypervector_generation.py
+# encode_hv.py
 
 import numpy as np
 import os

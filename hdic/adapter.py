@@ -1,3 +1,5 @@
+# Adapter.py
+
 import numpy as np
 from .feature_extractor import generate_embedding2
 from .encode_hv import encode_embedding_to_hv

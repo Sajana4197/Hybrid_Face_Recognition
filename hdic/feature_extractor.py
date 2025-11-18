@@ -1,4 +1,4 @@
-#embedder_512D.py
+# feature_extractor.py
 
 import os
 import cv2

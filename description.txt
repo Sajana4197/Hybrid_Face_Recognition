@@ -1,0 +1,85 @@
+neural hashing
+
+Step 1 — 512D embedding
+FaceNet (InceptionResnetV1)
+→ 512D vector
+
+Step 2 — PCA reduction
+512D → 128D
+
+Step 3 — Hyperplane hashing
+128D vector
+· 96 hyperplanes
+→ 96-bit NeuralHash
+
+Step 4 — Store in DB
+
+
+1. Cascade mode (cascade.py)
+NeuralHash → shortlist top-K → HDIC confirmation → final decision
+
+Used when:
+* You want ultra-fast early rejection.
+* Database is large.
+* Most inputs are non-watchlist faces.
+
+Step 1: Compute NeuralHash of probe
+probe_nh = compute_hash_bits(face_rgb)  # 96-bit vector
+
+Step 2: Shortlist top-K by NH
+Loop through all 10 identities
+
+For each identity:
+* Compare probe_nh to each of their 15 stored NH hashes
+* Compute Hamming distance (count mismatched bits)
+* Keep the minimum distance for that identity
+
+Apply NH threshold Tnh = 30 → reject anything > 30
+Take top-K candidates
+
+Step 3: HDIC confirmation
+
+* For each shortlisted candidate, compare probe HV (10k-bit) to 3 cluster prototypes
+* Compute Hamming distance for each cluster
+* Keep minimum distance and cluster name
+* Apply HDIC threshold, e.g., Thdic=3100 → reject PID_3
+
+Step 4: Decide
+
+Compute combined score:
+- SNH​=1−dNH​/96 SHDIC​=1−dHDIC​/10000
+- Sfinal ​= wNH​∗SNH ​+ wHDIC​∗SHDIC
+
+- Apply fusion threshold, e.g., fused_th = 0.75
+
+2. Parallel scoring mode (parallel_service.py + parallel.py)
+Align → NH + HDIC feature extraction → score all persons in parallel → Weighted score fusion → Decision
+
+Used when:
+* Low latency real-time system
+* You want full scanning for all persons
+* No shortlisting, full fusion scoring
+
+Step 1: Compute probe NH and HV (Same as cascade)
+probe_nh = compute_hash_bits(face_rgb)  # 96-bit
+probe_hv = encode_embedding_to_hv(generate_embedding2(face_rgb))
+
+Step 2: Compute distances for all 10 identities
+
+For each identity:
+* NH distance: min over 15 stored hashes
+* HDIC distance: min over 3 clusters
+
+Step 3: Convert distances → similarity [0,1]
+SNH ​= 1 − dNH​/96
+SHDIC​= 1 − dHDIC​/10000
+
+Step 4: Fuse scores
+Sfinal ​= wNH​∗SNH ​+ wHDIC​∗SHDIC​
+
+Step 5: Apply thresholds
+
+- Tnh_reject = 30
+- Thdic_accept = 3100
+- fused_th = 0.75
+- Decision → MATCH = PID_4 (same as cascade)

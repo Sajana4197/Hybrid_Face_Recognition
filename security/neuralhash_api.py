@@ -1,7 +1,9 @@
+# neuralhash_api.py
+
 import os
 import sys
 import argparse
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Tuple
 
 import numpy as np
 
