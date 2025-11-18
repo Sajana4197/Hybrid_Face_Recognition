@@ -1,6 +1,7 @@
 {
   "name": "admin_ui",
   "version": "0.0.0",
+  "type": "module",
   "scripts": {
     "dev": "vite --port 5174",
     "build": "vite build",
