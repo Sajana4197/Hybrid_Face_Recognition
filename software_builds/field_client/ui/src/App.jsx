@@ -8,8 +8,6 @@ import React, {
 import {
   Camera,
   ShieldCheck,
-  Wifi,
-  WifiOff,
   CheckCircle2,
   XCircle,
   AlertTriangle,
@@ -22,6 +20,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   UserCircle,
+  CheckCircle,
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:5001";
@@ -42,6 +41,7 @@ export default function App() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const matchSoundRef = useRef(null);
   const noMatchSoundRef = useRef(null);
+  const [notification, setNotification] = useState(null);
 
   // Ref for admin decision sound
   const verificationSoundRef = useRef(null);
@@ -193,6 +193,42 @@ export default function App() {
         console.warn("Polling error:", e);
       }
     }, 5000);
+  }
+
+  async function reloadWatchlist() {
+    // Show loading notification
+    setNotification({
+      type: "loading",
+      message: "Reloading watchlist...",
+    });
+
+    try {
+      const res = await fetch(`${API_BASE}/reload`, { method: "POST" });
+      const data = await res.json();
+
+      if (data.status === "success") {
+        setNotification({
+          type: "success",
+          message: `Watchlist reloaded successfully! `,
+          detail: `${data.watchlist_size} persons loaded`,
+        });
+      } else {
+        setNotification({
+          type: "error",
+          message: "Reload failed",
+          detail: data.message || "Unknown error",
+        });
+      }
+    } catch (e) {
+      setNotification({
+        type: "error",
+        message: "Connection failed",
+        detail: e.message,
+      });
+    }
+
+    // Auto-hide after 3 seconds
+    setTimeout(() => setNotification(null), 3000);
   }
 
   async function captureAndMatch() {
@@ -461,6 +497,20 @@ export default function App() {
           >
             {healthStatus[health].text}
           </span>
+          <button
+            onClick={reloadWatchlist}
+            className="group relative px-3 py-1.5 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 rounded-lg border border-cyan-500/50 hover:border-cyan-400 transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/50 backdrop-blur-sm"
+            title="Reload Watchlist"
+          >
+            <div className="flex items-center gap-1. 5">
+              <RefreshCw className="w-3. 5 h-3.5 text-cyan-400 group-hover:rotate-180 transition-transform duration-500" />
+              <span className="text-xs font-medium text-cyan-300 group-hover:text-cyan-200">
+                Reload
+              </span>
+            </div>
+            {/* Glow effect */}
+            <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/0 via-cyan-500/20 to-cyan-500/0 opacity-0 group-hover:opacity-100 blur-sm transition-opacity duration-300 rounded-lg"></div>
+          </button>
         </header>
 
         <div key={activeTab}>
@@ -492,6 +542,80 @@ export default function App() {
                   </p>
                 </div>
                 <div className="flex flex-col items-center justify-center gap-4">
+                  {notification && (
+                    <div className="w-full max-w-md mx-auto mb-4 animate-slideInDown">
+                      <div
+                        className={`
+          relative w-full
+          bg-gradient-to-br ${
+            notification.type === "loading"
+              ? "from-blue-500/20 via-cyan-500/20 to-blue-500/20"
+              : notification.type === "success"
+              ? "from-emerald-500/20 via-green-500/20 to-emerald-500/20"
+              : "from-red-500/20 via-rose-500/20 to-red-500/20"
+          }
+          backdrop-blur-xl
+          border-2 ${
+            notification.type === "loading"
+              ? "border-cyan-400/60"
+              : notification.type === "success"
+              ? "border-emerald-400/60"
+              : "border-red-400/60"
+          }
+          rounded-2xl
+          shadow-2xl ${
+            notification.type === "loading"
+              ? "shadow-cyan-500/50"
+              : notification.type === "success"
+              ? "shadow-emerald-500/50"
+              : "shadow-red-500/50"
+          }
+          ring-4 ${
+            notification.type === "loading"
+              ? "ring-cyan-400/30"
+              : notification.type === "success"
+              ? "ring-emerald-400/30"
+              : "ring-red-400/30"
+          }
+          overflow-hidden
+        `}
+                      >
+                        {/* Animated background */}
+                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-shimmer"></div>
+
+                        {/* Content */}
+                        <div className="relative p-4 flex flex-col items-center justify-center text-center gap-2">
+                          {/* Icon */}
+                          <div className="relative">
+                            {notification.type === "loading" && (
+                              <Loader className="w-6 h-6 text-cyan-400 animate-spin" />
+                            )}
+                            {notification.type === "success" && (
+                              <CheckCircle className="w-6 h-6 text-emerald-400" />
+                            )}
+                            {notification.type === "error" && (
+                              <XCircle className="w-6 h-6 text-red-400" />
+                            )}
+                            {notification.type === "loading" && (
+                              <span className="absolute inset-0 rounded-full bg-cyan-400/30 animate-ping"></span>
+                            )}
+                          </div>
+
+                          {/* Message */}
+                          <div className="w-full">
+                            <h4 className="text-white font-bold text-base mb-0. 5 drop-shadow-lg">
+                              {notification.message}
+                            </h4>
+                            {notification.detail && (
+                              <p className="text-gray-300 text-sm opacity-90">
+                                {notification.detail}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <button
                     onClick={captureAndMatch}
                     disabled={busy}
