@@ -6,18 +6,50 @@ import json
 
 # --- Use your real modules ---
 from preprocess.align import align_from_array           # array-based align (fast)
-from neuralhash.adapter import compute_hash_bits        # 96-bit NH vector
+from neuralhash. adapter import compute_hash_bits        # 96-bit NH vector
 from hdic.encode_hv import encode_embedding_to_hv       # returns 10k-D HV directly
 from hdic.feature_extractor import generate_embedding2  # import your 512-D embedder
 
 # ---------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parents[1]  # repo root
+REPO_ROOT = Path(__file__).resolve(). parents[1]  # repo root
+
+# Global variables that can be reloaded
+NH_MAP = {}
+HD_MAP = {}
+PERSON_IDS = []
+NAME_MAP = {}
+
+
+def load_watchlist_data():
+    """
+    Load watchlist from NPZ cache (fast) or JSONL (fallback). 
+    Can be called multiple times to reload data.
+    """
+    global NH_MAP, HD_MAP, PERSON_IDS, NAME_MAP
+    
+    # Try loading from NPZ cache first
+    try:
+        from software_builds.field_client. backend.cache_loader import load_from_npz_cache
+        NH_MAP, HD_MAP, NAME_MAP = load_from_npz_cache(REPO_ROOT)
+    except Exception as e:
+        print(f"[ERROR] Failed to load from cache loader: {e}")
+        # Fallback to original JSONL loader
+        NH_MAP, HD_MAP = _load_watchlists_jsonl_arrays(REPO_ROOT)
+        NAME_MAP = {}
+    
+    # Get person IDs that have both modalities
+    PERSON_IDS = tuple(sorted(set(NH_MAP.keys()) & set(HD_MAP.keys())))
+    
+    print(f"[INFO] Watchlist loaded: {len(PERSON_IDS)} persons with both NH and HDIC")
+    
+    return len(PERSON_IDS)
+
 
 def _load_watchlists_jsonl_arrays(repo_root: Path):
     """
-    Load both NH and HDIC from JSONL and convert to compact numpy arrays once.
+    FALLBACK: Load both NH and HDIC from JSONL and convert to compact numpy arrays once.
     Returns:
       nh_map: {pid: np.uint8 shape (N_hashes, 96)}
       hd_map: {pid: np.uint8 shape (N_clusters, 10000)}
@@ -32,10 +64,10 @@ def _load_watchlists_jsonl_arrays(repo_root: Path):
                 s = line.strip()
                 if not s: continue
                 rec = json.loads(s)
-                pid = rec.get("person_id") or rec.get("id") or rec.get("pid")
+                pid = rec. get("person_id") or rec.get("id") or rec.get("pid")
                 hashes = rec.get("hashes", [])
                 if pid and hashes:
-                    arr = np.asarray(hashes, dtype=np.uint8).reshape(-1, 96)
+                    arr = np.asarray(hashes, dtype=np.uint8). reshape(-1, 96)
                     nh_map[pid] = arr
 
     if hdic_file.exists():
@@ -52,9 +84,10 @@ def _load_watchlists_jsonl_arrays(repo_root: Path):
 
     return nh_map, hd_map
 
-# Load once (cached for all requests)
-NH_MAP, HD_MAP = _load_watchlists_jsonl_arrays(REPO_ROOT)
-PERSON_IDS = tuple(sorted(set(NH_MAP.keys()) & set(HD_MAP.keys())))
+
+# Load data on module import (uses NPZ cache)
+load_watchlist_data()
+
 
 # ---------------------------------------------------------
 # FAST DISTANCES
@@ -70,7 +103,7 @@ def _nh_min_distance(probe_bits: np.ndarray, hashes_mat: np.ndarray) -> int:
     # XOR and count mismatches (since 0/1) == !=
     return int(np.min(np.sum(hashes_mat != probe_bits, axis=1)))
 
-def _hdic_min_distance(probe_hv: np.ndarray, protos_mat: np.ndarray) -> int:
+def _hdic_min_distance(probe_hv: np. ndarray, protos_mat: np.ndarray) -> int:
     """
     Vectorized Hamming distance to a person's HDIC prototype hypervectors (binary).
     probe_hv: (10000,) uint8 in {0,1}
@@ -87,8 +120,8 @@ def match_frame(
     frame_bgr: np.ndarray,
     Tnh: float = 30,
     Thdic: float = 3100,
-    w_nh: float = 0.4,
-    w_hdic: float = 0.6,
+    w_nh: float = 0.2,
+    w_hdic: float = 0.8,
     fused_th: float = 0.75,
     verbose: bool = False,  # keep logs minimal by default
 ):
@@ -99,9 +132,9 @@ def match_frame(
 
     # Feature extraction
     try:
-        probe_nh = compute_hash_bits(face_rgb).astype(np.uint8).reshape(-1)
+        probe_nh = compute_hash_bits(face_rgb).astype(np. uint8).reshape(-1)
         emb = generate_embedding2(face_rgb)
-        probe_hv = encode_embedding_to_hv(emb).astype(np.uint8).reshape(-1)
+        probe_hv = encode_embedding_to_hv(emb). astype(np.uint8). reshape(-1)
     except Exception as e:
         return {"decision": "ERROR", "error": f"Encoding failed: {e}", "person_id": None, "scores": {}}
 
@@ -111,7 +144,7 @@ def match_frame(
     # Score each person
     best_pid, best_sfinal, best_metrics = None, -1.0, None
     for pid in PERSON_IDS:
-        d_nh = _nh_min_distance(probe_nh, NH_MAP.get(pid))
+        d_nh = _nh_min_distance(probe_nh, NH_MAP. get(pid))
         d_hdic = _hdic_min_distance(probe_hv, HD_MAP.get(pid))
         Snh = 1.0 - (d_nh / 96.0)
         Shdic_norm = 1.0 - (d_hdic / 10000.0)

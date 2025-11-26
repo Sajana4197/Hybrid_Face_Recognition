@@ -50,7 +50,41 @@ ADMIN_API = CONFIG.get("admin_api", "http://127.0.0.1:5002")
 
 # Load merged watchlist (NH + HDIC)
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PERSONS = load_watchlists(REPO_ROOT)
+PERSONS = {}
+
+def reload_watchlist():
+    """
+    Reload watchlist from NPZ cache ONLY (super fast). 
+    Does NOT rebuild cache - admin does that.
+    """
+    global PERSONS
+    
+    print("\n" + "="*60)
+    print("[RELOAD] Fast reload from NPZ cache")
+    print("="*60)
+    
+    # Reload fusion service data from NPZ cache (FAST!)
+    from fusion import parallel_service
+    count = parallel_service.load_watchlist_data()
+    
+    # Build PERSONS dict from the fusion engine data (fast, no file I/O)
+    PERSONS = {}
+    for pid in parallel_service. PERSON_IDS:
+        name = parallel_service.NAME_MAP. get(pid, pid)
+        PERSONS[pid] = {
+            "name": name,
+            "nh_hashes": parallel_service.NH_MAP.get(pid, []),
+            "hdic_prototypes": parallel_service.HD_MAP.get(pid, [])
+        }
+    
+    print(f"[INFO] ✅ Reload complete in <1 second!")
+    print(f"[INFO]    Loaded {count} persons from NPZ cache")
+    print("="*60 + "\n")
+    
+    return count
+
+# Initial load
+reload_watchlist()
 
 # ---------- Utility ----------
 def log_match(entry: dict):
@@ -80,6 +114,41 @@ def send_manual_alert(person_id: str, score: float, image_bytes: bytes, timestam
 @app.get("/health")
 def health():
     return {"status": "ok", "watchlist_size": len(PERSONS)}
+
+# ---------- Reload watchlist ----------
+@app.post("/reload")
+def reload_watchlist_endpoint():
+    """Reload the watchlist from NPZ cache without restarting (FAST)"""
+    import time
+    start = time.time()
+    
+    try:
+        print("\n" + "="*60)
+        print("[ENDPOINT] /reload called")
+        print("="*60)
+        
+        count = reload_watchlist()
+        
+        elapsed = time.time() - start
+        print(f"[ENDPOINT] Reload completed in {elapsed:. 2f}s")
+        
+        return {
+            "status": "success",
+            "message": "Watchlist reloaded from NPZ cache",
+            "watchlist_size": count,
+            "reload_time_seconds": round(elapsed, 2)
+        }
+    except Exception as e:
+        elapsed = time.time() - start
+        print(f"[ERROR] Reload failed after {elapsed:.2f}s: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            "status": "error",
+            "message": str(e),
+            "reload_time_seconds": round(elapsed, 2)
+        }
 
 # ---------- Config endpoints ----------
 @app.get("/config")

@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 import numpy as np
+import threading
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -75,6 +76,65 @@ def notify_field_client(person_id, timestamp, status):
         print("[INFO] Callback to field client:", r.status_code)
     except Exception as e:
         print("[WARN] Callback failed:", e)
+
+def notify_field_client_reload_async():
+    """
+    Notify field client to reload in background thread.
+    Waits for cache file to be updated before notifying.
+    """
+    def _notify():
+        import time
+        from pathlib import Path
+        
+        # Wait for cache file to be updated
+        cache_file = REPO_ROOT / "db" / "watchlist_cache.npz"
+        max_wait = 15  # Maximum 15 seconds
+        wait_interval = 0.5  # Check every 500ms
+        
+        print("[INFO] Waiting for cache rebuild to complete...")
+        
+        # Get current cache modification time
+        if cache_file.exists():
+            initial_mtime = cache_file. stat().st_mtime
+        else:
+            initial_mtime = 0
+        
+        # Wait for cache to be updated
+        elapsed = 0
+        while elapsed < max_wait:
+            time.sleep(wait_interval)
+            elapsed += wait_interval
+            
+            if cache_file.exists():
+                current_mtime = cache_file.stat().st_mtime
+                if current_mtime > initial_mtime:
+                    print(f"[INFO] ✅ Cache updated after {elapsed:.1f}s")
+                    break
+        
+        if elapsed >= max_wait:
+            print(f"[WARN] Cache rebuild timeout after {max_wait}s, notifying anyway...")
+        
+        # Small additional delay to ensure file is fully written
+        time.sleep(0.5)
+        
+        # Now notify field client
+        try:
+            print("[INFO] Notifying field client to reload...")
+            r = requests.post(f"{FIELD_API}/reload", timeout=15)
+            if r.status_code == 200:
+                response = r.json()
+                print(f"[INFO] ✅ Field client reloaded: {response. get('watchlist_size', '? ')} persons")
+            else:
+                print(f"[WARN] Field client reload returned status {r.status_code}")
+        except Exception as e:
+            print(f"[ERROR] Failed to notify field client: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Run in background thread (non-blocking)
+    thread = threading.Thread(target=_notify, daemon=True)
+    thread. start()
+    return True  # Return immediately
 
 @router.get("/list")
 def list_persons():
@@ -166,6 +226,9 @@ async def enroll_person(
     # ✅ AUTOMATIC CACHE REBUILD (non-blocking)
     print("[INFO] 🔄 Triggering automatic cache rebuild...")
     rebuild_cache_async()
+    
+    # ✅ Notify field client in background (non-blocking)
+    notify_field_client_reload_async()
 
     return dict(
         status="ok",
@@ -174,7 +237,8 @@ async def enroll_person(
         failed_images=failed,
         total=len(files),
         clusters=len(hdr["prototypes"]),
-        cache_status="rebuilding"  # ✅ Indicate cache is being rebuilt
+        cache_status="rebuilding",
+        field_client_notification="scheduled"  # ✅ Changed
     )
 
 
@@ -184,16 +248,26 @@ def delete_person(person_id: str):
     ensure_files()
     nh = load_jsonl(NH_FILE)
     hd = load_jsonl(HDIC_FILE)
-    nh2 = [r for r in nh if r.get("person_id") != person_id]
+    nh2 = [r for r in nh if r. get("person_id") != person_id]
     hd2 = [r for r in hd if r.get("person_id") != person_id]
     save_jsonl(NH_FILE, nh2)
     save_jsonl(HDIC_FILE, hd2)
     
-    # ✅ AUTOMATIC CACHE REBUILD
-    print("[INFO] 🔄 Triggering automatic cache rebuild after deletion...")
+    # Trigger cache rebuild
+    print(f"[INFO] 🗑️ Deleted person {person_id}")
+    print("[INFO] 🔄 Triggering cache rebuild...")
     rebuild_cache_async()
     
-    return dict(status="deleted", person_id=person_id, cache_status="rebuilding")
+    # Notify field client (in background)
+    print("[INFO] 📡 Scheduling field client notification...")
+    notify_field_client_reload_async()
+    
+    return dict(
+        status="deleted", 
+        person_id=person_id, 
+        cache_status="rebuilding",
+        field_client_notification="scheduled"
+    )
 
 @router.get("/config")
 def get_config():
