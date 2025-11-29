@@ -130,7 +130,7 @@ def reload_watchlist_endpoint():
         count = reload_watchlist()
         
         elapsed = time.time() - start
-        print(f"[ENDPOINT] Reload completed in {elapsed:. 2f}s")
+        print(f"[ENDPOINT] Reload completed in {elapsed:.2f}s")
         
         return {
             "status": "success",
