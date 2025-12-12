@@ -1,7 +1,0 @@
-$b = New-Object 'System.Byte[]' 32  
-[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
-$env:NH_BUCKET_KEY = ($b | ForEach-Object { $_.ToString('x2') }) -join "" 
-echo $env:NH_BUCKET_KEY  ## should be non zero 32 bit value
-$env:DATABASE_URL ='postgresql://neondb_owner:npg_PiFHqJb8G3EI@ep-twilight-lab-adgrxvy4-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
-python enroll_dataset.py --dataset-root .\dataset\enrolled --init-db 
-python ./security/match_webcam.py --camera 1 --hamming-max 10 
