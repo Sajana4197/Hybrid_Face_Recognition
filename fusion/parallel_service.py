@@ -122,7 +122,7 @@ def match_frame(
     Thdic: float = 3100,
     w_nh: float = 0.2,
     w_hdic: float = 0.8,
-    fused_th: float = 0.75,
+    fused_th: float = 0.8,
     verbose: bool = False,  # keep logs minimal by default
 ):
     # Align face (array-based; no file I/O)
