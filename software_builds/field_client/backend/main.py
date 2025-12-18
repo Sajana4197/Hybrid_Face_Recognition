@@ -790,14 +790,16 @@ async def match(file: UploadFile = File(...)):
 
     decision = result.get("decision")
 
-    # -------------------
+        # -------------------
     # LED Status Handling
     # -------------------
     if decision == "MATCH":
         target = "CRIMINAL"
+    elif decision == "MANUAL_CHECK":
+        target = "IDLE"  # or create a specific LED state for manual check
     elif decision == "NO_MATCH":
         target = "SAFE"
-    elif decision == "NO_FACE":
+    elif decision == "NO_FACE": 
         target = "IDLE"
     else:
         target = "IDLE"
@@ -807,8 +809,8 @@ async def match(file: UploadFile = File(...)):
         led.send(target)
         last_led_state = target
 
-    # Send to admin on match
-    if decision == "MATCH":
+    # Send to admin on match OR manual check
+    if decision == "MATCH" or decision == "MANUAL_CHECK":
         pid = result.get("person_id") or "unknown"
         sfinal = (result.get("scores") or {}).get("Sfinal", 0.0)
         send_manual_alert(pid, sfinal, frame)
@@ -887,20 +889,33 @@ async def match_multi(files: List[UploadFile] = File(...)):
                     "person_id": None,
                 }
 
-            ok = (d_nh < Tnh and d_hdic < Thdic and Sfinal >= T_final)
+                        # Determine match status with three-tier logic
+            if (d_nh < Tnh and d_hdic < Thdic):
+                if Sfinal >= 0.8:
+                    ok = True
+                    frame_decision = "MATCH"
+                elif 0.75 < Sfinal < 0.8:
+                    ok = "MANUAL"  # Special marker for manual check
+                    frame_decision = "MANUAL_CHECK"
+                else:
+                    ok = False
+                    frame_decision = "NO_MATCH"
+            else:
+                ok = False
+                frame_decision = "NO_MATCH"
 
             print(
                 f"Frame {idx+1}: d_nh={int(d_nh)}, d_hdic={int(d_hdic)}, "
-                f"Sfinal={float(Sfinal):.3f} -> {'MATCH' if ok else 'NO_MATCH'}"
+                f"Sfinal={float(Sfinal):.3f} -> {frame_decision}"
             )
 
             return {
                 "index": idx + 1,
                 "filename": filename,
-                "ok": ok,
-                "decision": "MATCH" if ok else "NO_MATCH",
+                "ok":  ok,
+                "decision": frame_decision,
                 "Sfinal": float(Sfinal),
-                "d_nh": int(d_nh),
+                "d_nh":  int(d_nh),
                 "d_hdic": int(d_hdic),
                 "person_id": pid,
             }
@@ -941,15 +956,27 @@ async def match_multi(files: List[UploadFile] = File(...)):
         }
 
     total_valid = len(valid_results)
-    match_count = sum(1 for r in valid_results if r["ok"])
+    # Count frames that are either MATCH (ok=True) or MANUAL_CHECK (ok="MANUAL")
+    match_count = sum(1 for r in valid_results if r["ok"] == True)
+    manual_count = sum(1 for r in valid_results if r["ok"] == "MANUAL")
     needed = ceil(total_valid / 2)
 
     # Determine majority decision from valid-face frames only
-    majority_decision = "MATCH" if match_count >= needed else "NO_MATCH"
+    # If majority are definite matches, it's MATCH
+    # If majority need manual checking or are mixed, send to MANUAL_CHECK
+    # Otherwise NO_MATCH
+    if match_count >= needed:
+        majority_decision = "MATCH"
+    elif (match_count + manual_count) >= needed:
+        majority_decision = "MANUAL_CHECK"
+    else:
+        majority_decision = "NO_MATCH"
 
     # LED logic
     if majority_decision == "MATCH":
-        led.send("CRIMINAL")
+        led. send("CRIMINAL")
+    elif majority_decision == "MANUAL_CHECK":
+        led.send("IDLE")  # or create a specific LED state
     else:
         led.send("SAFE")
 
@@ -975,8 +1002,8 @@ async def match_multi(files: List[UploadFile] = File(...)):
 
     log_match(final_result)
 
-    # Trigger admin alert only for MATCH
-    if majority_decision == "MATCH" and best_pid:
+    # Trigger admin alert for MATCH or MANUAL_CHECK
+    if (majority_decision == "MATCH" or majority_decision == "MANUAL_CHECK") and best_pid:
         try:
             _, best_bytes, _ = frames_data[best_idx]
             enqueue_case(best_pid, best_score, best_bytes)

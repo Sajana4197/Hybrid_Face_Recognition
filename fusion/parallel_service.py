@@ -168,11 +168,15 @@ def match_frame(
     if best_pid is None:
         return {"decision": "NO_MATCH", "person_id": None, "scores": {}}
 
-    is_match = (
-        (best_metrics["d_nh"] < Tnh)
-        and (best_metrics["d_hdic"] < Thdic)
-        and (best_metrics["Sfinal"] >= fused_th)
-    )
-    decision = "MATCH" if is_match else "NO_MATCH"
+        # Determine decision based on three-tier threshold logic
+    if (best_metrics["d_nh"] < Tnh) and (best_metrics["d_hdic"] < Thdic):
+        if best_metrics["Sfinal"] >= 0.8:
+            decision = "MATCH"
+        elif 0.75 < best_metrics["Sfinal"] < 0.8:
+            decision = "MANUAL_CHECK"
+        else:
+            decision = "NO_MATCH"
+    else:
+        decision = "NO_MATCH"
 
     return {"decision": decision, "person_id": best_pid, "scores": best_metrics}
