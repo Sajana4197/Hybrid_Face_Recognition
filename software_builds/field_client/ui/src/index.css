@@ -27,12 +27,26 @@ body {
   }
 }
 
+@keyframes pulse-orange {
+  0%,
+  100% {
+    box-shadow: 0 0 30px rgba(255, 136, 38, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 15px rgb(186, 86, 4, 0.3);
+  }
+}
+
 .animate-pulse-red {
   animation: pulse-red 1s ease-in-out 5;
 }
 
 .animate-pulse-green {
   animation: pulse-green 1s ease-in-out 5;
+}
+
+.animate-pulse-orange {
+  animation: pulse-orange 1s ease-in-out 5;
 }
 
 @keyframes slideInDown {

@@ -41,6 +41,7 @@ export default function App() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const matchSoundRef = useRef(null);
   const noMatchSoundRef = useRef(null);
+  const manualCheckSoundRef = useRef(null);
   const [notification, setNotification] = useState(null);
 
   // Ref for admin decision sound
@@ -149,6 +150,8 @@ export default function App() {
       setGlowColor("pulse-red");
     } else if (["NO_MATCH", "ADMIN_CONFIRMED"].includes(decision)) {
       setGlowColor("pulse-green");
+    } else if (["MANUAL_CHECK"].includes(decision)) {
+      setGlowColor("pulse-orange");
     } else {
       setGlowColor("none");
       return;
@@ -237,6 +240,7 @@ export default function App() {
     // --- ADDED: Prime all audio sounds on user click ---
     if (matchSoundRef.current) matchSoundRef.current.load();
     if (noMatchSoundRef.current) noMatchSoundRef.current.load();
+    if (manualCheckSoundRef.current) manualCheckSoundRef.current.load();
     if (verificationSoundRef.current) verificationSoundRef.current.load();
     // ---------------------------------------------------
 
@@ -285,6 +289,16 @@ export default function App() {
               .catch((e) => console.warn("Match audio play failed:", e));
             setTimeout(() => audio.pause(), 5000);
           }
+        } else if (data.decision === "MANUAL_CHECK") {
+          // ✅ ADD THIS BLOCK
+          const audio = manualCheckSoundRef.current;
+          if (audio) {
+            audio.currentTime = 0;
+            audio
+              .play()
+              .catch((e) => console.warn("Manual check audio play failed:", e));
+            setTimeout(() => audio.pause(), 5000);
+          }
         } else if (data.decision === "NO_MATCH") {
           const audio = noMatchSoundRef.current;
           if (audio) {
@@ -298,7 +312,11 @@ export default function App() {
       } catch (err) {
         console.warn("Audio playback error:", err);
       }
-      if (data.decision === "MATCH" && data.best_person_id && data.timestamp) {
+      if (
+        (data.decision === "MATCH" || data.decision === "MANUAL_CHECK") &&
+        data.best_person_id &&
+        data.timestamp
+      ) {
         pollAdminDecision(data.best_person_id, data.timestamp);
       }
     } catch (e) {
@@ -522,6 +540,8 @@ export default function App() {
                     ? "animate-pulse-red"
                     : glowColor === "pulse-green"
                     ? "animate-pulse-green"
+                    : glowColor === "pulse-orange"
+                    ? "animate-pulse-orange"
                     : ""
                 }`}
               >
@@ -643,6 +663,12 @@ export default function App() {
                     ref={noMatchSoundRef}
                     id="noMatchSound"
                     src="/no-match-sound.mp3"
+                    preload="auto"
+                  />
+                  <audio
+                    ref={manualCheckSoundRef}
+                    id="manualCheckSound"
+                    src="/warning.mp3"
                     preload="auto"
                   />
                   <audio
@@ -793,6 +819,13 @@ const DecisionDisplay = ({ decision, adminStatus }) => {
       style: "bg-red-500/20 border-red-500/50 text-red-200",
       title: "MATCH FOUND",
     },
+    MANUAL_CHECK: {
+      icon: <AlertTriangle size={28} />,
+      style:
+        "bg-orange-500/50 border-orange-500/70 text-orange-200 text-center",
+      title: "MANUAL VERIFICATION REQUIRED",
+      text: "Sent to admin for review",
+    },
     NO_MATCH: {
       icon: <XCircle size={28} />,
       style: "bg-green-500/20 border-green-500/50 text-green-200",
@@ -879,20 +912,6 @@ style.innerHTML = `
 }
 .animate-fadeIn { 
   animation: fadeIn 0.5s ease-in-out; 
-}
-@keyframes pulse-red {
-  0%, 100% { box-shadow: 0 0 30px rgba(239, 68, 68, 0.6); }
-  50% { box-shadow: 0 0 15px rgba(239, 68, 68, 0.3); }
-}
-.animate-pulse-red {
-  animation: pulse-red 1s ease-in-out 5;
-}
-@keyframes pulse-green {
-  0%, 100% { box-shadow: 0 0 30px rgba(34, 197, 94, 0.6); }
-  50% { box-shadow: 0 0 15px rgba(34, 197, 94, 0.3); }
-}
-.animate-pulse-green {
-  animation: pulse-green 1s ease-in-out 5;
 }
 `;
 document.head.appendChild(style);
