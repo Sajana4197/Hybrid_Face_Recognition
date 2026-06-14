@@ -439,7 +439,7 @@ async def match_multi(files: List[UploadFile] = File(...)):
 
     elif strong_match_count == 2 and manual_check_count >= 1:
         # 2 frames with Sfinal >= 0.8 and at least 1 frame with 0.75 <= Sfinal < 0.8 → MANUAL_CHECK
-        majority_decision = "MANUAL_CHECK"
+        majority_decision = "MATCH"
 
     elif strong_match_count == 1 and manual_check_count >= 2:
         # 1 frame with Sfinal >= 0.8 and at least 2 frames with 0.75 <= Sfinal < 0.8 → MANUAL_CHECK
